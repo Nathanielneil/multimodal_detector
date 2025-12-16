@@ -1,0 +1,24 @@
+# 多模态检测器依赖
+# 安装: pip install -r requirements.txt
+
+# GUI 框架
+PySide6>=6.5.0
+
+# 计算机视觉
+opencv-python>=4.8.0
+
+# 语音识别 (Whisper)
+openai-whisper>=20231117
+
+# 音频录制
+sounddevice>=0.4.6
+scipy>=1.10.0
+
+# 手势识别 (MediaPipe)
+mediapipe>=0.10.0
+
+# 物体检测 (YOLOv8)
+ultralytics>=8.0.0
+
+# 基础依赖
+numpy>=1.24.0
