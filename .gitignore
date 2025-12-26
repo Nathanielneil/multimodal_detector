@@ -41,3 +41,12 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# ROS catkin workspace (build artifacts)
+catkin_ws/
+
+# Reference projects
+github_reference_project/
+
+# Detection history files
+detection_history_*.json

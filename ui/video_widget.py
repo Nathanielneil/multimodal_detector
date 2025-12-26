@@ -1,5 +1,6 @@
 """
 中栏视频显示组件 - 包含视频画面和四模态状态指示器
+v2.12: 新增语音识别可视化叠加层
 """
 
 import cv2
@@ -13,6 +14,7 @@ from PySide6.QtCore import Qt, Signal, QTimer, QSize
 from PySide6.QtGui import QImage, QPixmap, QMouseEvent
 
 from .styles import MODAL_COLORS
+from .voice_overlay import VoiceOverlayWidget
 
 
 class ModalStatusCard(QFrame):
@@ -133,20 +135,14 @@ class VideoWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._video_aspect_ratio = 16 / 9
-        self._modal_cards: Dict[str, ModalStatusCard] = {}
         self._setup_ui()
+        self._setup_voice_overlay()
 
     def _setup_ui(self):
-        """初始化UI"""
-        main_layout = QHBoxLayout(self)
+        """初始化UI - 简化版，仅包含视频和按钮"""
+        main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(10)
-
-        # ===== 左侧：视频和按钮 =====
-        video_container = QWidget()
-        video_layout = QVBoxLayout(video_container)
-        video_layout.setContentsMargins(0, 0, 0, 0)
-        video_layout.setSpacing(10)
 
         # 视频显示区域
         self._video_label = QLabel()
@@ -166,7 +162,7 @@ class VideoWidget(QWidget):
         self._video_label.mouseMoveEvent = self._on_mouse_move
         self._video_label.mouseReleaseEvent = self._on_mouse_release
 
-        video_layout.addWidget(self._video_label, 1)
+        main_layout.addWidget(self._video_label, 1)
 
         # 控制按钮区域
         btn_layout = QHBoxLayout()
@@ -186,38 +182,7 @@ class VideoWidget(QWidget):
         btn_layout.addWidget(self._btn_stop)
         btn_layout.addStretch()
 
-        video_layout.addLayout(btn_layout)
-
-        main_layout.addWidget(video_container, 3)
-
-        # ===== 右侧：模态状态指示器 =====
-        status_container = QWidget()
-        status_container.setFixedWidth(160)
-        status_layout = QVBoxLayout(status_container)
-        status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(8)
-
-        # 标题
-        status_title = QLabel("识别状态")
-        status_title.setStyleSheet("font-weight: bold; font-size: 13px; padding: 5px;")
-        status_layout.addWidget(status_title)
-
-        # 四个模态卡片
-        modal_configs = [
-            ("voice", "[V] 语音"),
-            ("gesture", "[G] 手势"),
-            ("image", "[I] 图像"),
-            ("touch", "[T] 触屏"),
-        ]
-
-        for modal_type, modal_name in modal_configs:
-            card = ModalStatusCard(modal_type, modal_name)
-            self._modal_cards[modal_type] = card
-            status_layout.addWidget(card)
-
-        status_layout.addStretch()
-
-        main_layout.addWidget(status_container)
+        main_layout.addLayout(btn_layout)
 
         # 连接信号
         self._btn_start.clicked.connect(self.start_camera_clicked.emit)
@@ -266,25 +231,17 @@ class VideoWidget(QWidget):
         self._video_label.setPixmap(scaled_pixmap)
 
     def display_placeholder(self, message: str = None):
-        """显示占位符画面"""
+        """显示占位符画面（使用PIL渲染中文）"""
+        from PIL import Image, ImageDraw, ImageFont
+
         # 创建占位符图像
         width = max(480, self._video_label.width())
         height = int(width / self._video_aspect_ratio)
 
         placeholder = np.full((height, width, 3), 30, dtype=np.uint8)
 
-        # 使用英文避免中文乱码
-        text = "Camera Stopped"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-
-        # 绘制主文字
-        text_size = cv2.getTextSize(text, font, 1.0, 2)[0]
-        text_x = (width - text_size[0]) // 2
-        text_y = (height + text_size[1]) // 2
-        cv2.putText(placeholder, text, (text_x, text_y), font, 1.0, (120, 120, 120), 2)
-
         # 绘制摄像头图标
-        icon_y = text_y - 60
+        icon_y = height // 2 - 30
         icon_x = width // 2
         # 摄像头主体
         cv2.rectangle(placeholder, (icon_x - 30, icon_y - 20), (icon_x + 30, icon_y + 20), (80, 80, 80), 2)
@@ -294,34 +251,66 @@ class VideoWidget(QWidget):
         # 闪光灯
         cv2.circle(placeholder, (icon_x + 20, icon_y - 12), 4, (80, 80, 80), -1)
 
-        # 提示文字
-        hint = "Click [Start Camera] to begin"
-        hint_size = cv2.getTextSize(hint, font, 0.5, 1)[0]
-        hint_x = (width - hint_size[0]) // 2
-        cv2.putText(placeholder, hint, (hint_x, text_y + 40), font, 0.5, (80, 80, 80), 1)
+        # 使用PIL渲染中文
+        placeholder_rgb = cv2.cvtColor(placeholder, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(placeholder_rgb)
+        draw = ImageDraw.Draw(pil_image)
+
+        # 尝试加载中文字体
+        font = None
+        font_paths = [
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ]
+        for path in font_paths:
+            try:
+                font = ImageFont.truetype(path, 24)
+                break
+            except:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+
+        small_font = None
+        for path in font_paths:
+            try:
+                small_font = ImageFont.truetype(path, 14)
+                break
+            except:
+                continue
+        if small_font is None:
+            small_font = ImageFont.load_default()
+
+        # 绘制主文字
+        main_text = "摄像头已停止"
+        bbox = draw.textbbox((0, 0), main_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_x = (width - text_width) // 2
+        text_y = height // 2 + 20
+        draw.text((text_x, text_y), main_text, font=font, fill=(120, 120, 120))
+
+        # 绘制提示文字
+        hint_text = "点击 [启动摄像头] 开始"
+        bbox = draw.textbbox((0, 0), hint_text, font=small_font)
+        hint_width = bbox[2] - bbox[0]
+        hint_x = (width - hint_width) // 2
+        draw.text((hint_x, text_y + 40), hint_text, font=small_font, fill=(80, 80, 80))
+
+        # 转回OpenCV格式
+        placeholder = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
         self.display_frame(placeholder)
 
     def update_modal_status(
         self, modal_type: str, result: str, confidence: float, is_active: bool = True
     ):
-        """
-        更新模态状态显示
-
-        Args:
-            modal_type: 模态类型 (voice/gesture/image/touch)
-            result: 识别结果
-            confidence: 置信度
-            is_active: 是否激活
-        """
-        card = self._modal_cards.get(modal_type)
-        if card:
-            card.update_status(result, confidence, is_active)
+        """更新模态状态显示 (已移除识别状态卡片，保留接口兼容)"""
+        pass
 
     def reset_modal_status(self):
-        """重置所有模态状态"""
-        for card in self._modal_cards.values():
-            card.reset()
+        """重置所有模态状态 (已移除识别状态卡片，保留接口兼容)"""
+        pass
 
     def set_camera_running(self, is_running: bool):
         """
@@ -339,3 +328,51 @@ class VideoWidget(QWidget):
     def get_video_size(self) -> tuple:
         """获取视频显示区域尺寸"""
         return (self._video_label.width(), self._video_label.height())
+
+    def _setup_voice_overlay(self):
+        """设置语音识别可视化叠加层"""
+        # 创建叠加层，父组件设为 video_label
+        self._voice_overlay = VoiceOverlayWidget(self._video_label)
+        self._voice_overlay.hide()  # 初始隐藏
+
+    def resizeEvent(self, event):
+        """处理窗口大小变化，更新叠加层位置"""
+        super().resizeEvent(event)
+        # 延迟更新位置，确保布局完成
+        QTimer.singleShot(10, self._update_voice_overlay_position)
+
+    def showEvent(self, event):
+        """显示时更新叠加层位置"""
+        super().showEvent(event)
+        QTimer.singleShot(50, self._update_voice_overlay_position)
+
+    def _update_voice_overlay_position(self):
+        """更新语音叠加层位置 (底部对齐)"""
+        if hasattr(self, '_voice_overlay') and self._voice_overlay:
+            # 获取视频标签的实际大小
+            label_width = self._video_label.width()
+            label_height = self._video_label.height()
+            overlay_height = 100  # 叠加层固定高度 (霓虹波形 55 + 信息栏 45)
+
+            # 定位到视频区域底部
+            self._voice_overlay.setGeometry(
+                0,
+                label_height - overlay_height,
+                label_width,
+                overlay_height
+            )
+
+    @property
+    def voice_overlay(self) -> VoiceOverlayWidget:
+        """获取语音叠加层组件"""
+        return self._voice_overlay
+
+    def show_voice_overlay(self):
+        """显示语音叠加层"""
+        self._update_voice_overlay_position()
+        self._voice_overlay.show()
+        self._voice_overlay.raise_()  # 确保在最上层
+
+    def hide_voice_overlay(self):
+        """隐藏语音叠加层"""
+        self._voice_overlay.hide()

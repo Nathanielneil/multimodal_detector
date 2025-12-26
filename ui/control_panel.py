@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QLabel, QComboBox, QDoubleSpinBox,
     QPushButton, QSpacerItem, QSizePolicy
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 
 
 class ControlPanel(QWidget):
@@ -22,6 +22,8 @@ class ControlPanel(QWidget):
         reset_clicked: 重置统计按钮点击
         export_clicked: 导出历史按钮点击
         record_clicked: 录音按钮点击 (is_recording: bool)
+        camera_changed: 摄像头切换 (camera_id: int)
+        refresh_cameras_clicked: 刷新摄像头列表按钮点击
     """
 
     # 信号定义
@@ -31,6 +33,8 @@ class ControlPanel(QWidget):
     reset_clicked = Signal()
     export_clicked = Signal()
     record_clicked = Signal(bool)
+    camera_changed = Signal(int)
+    refresh_cameras_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,6 +74,28 @@ class ControlPanel(QWidget):
         modal_layout.addWidget(self.cb_touch)
 
         layout.addWidget(modal_group)
+
+        # ===== 摄像头设置组 =====
+        camera_group = QGroupBox("摄像头设置")
+        camera_layout = QVBoxLayout(camera_group)
+
+        # 摄像头选择下拉框
+        camera_row = QHBoxLayout()
+        camera_label = QLabel("摄像头:")
+        self.combo_camera = QComboBox()
+        self.combo_camera.addItem("摄像头 0", 0)
+        self.combo_camera.setToolTip("选择要使用的摄像头设备")
+        camera_row.addWidget(camera_label)
+        camera_row.addWidget(self.combo_camera, 1)
+        camera_layout.addLayout(camera_row)
+
+        # 刷新按钮
+        self.btn_refresh_cameras = QPushButton("刷新设备列表")
+        self.btn_refresh_cameras.setProperty("class", "secondary")
+        self.btn_refresh_cameras.setToolTip("扫描可用的摄像头设备")
+        camera_layout.addWidget(self.btn_refresh_cameras)
+
+        layout.addWidget(camera_group)
 
         # ===== 跟踪算法组 =====
         algo_group = QGroupBox("跟踪设置")
@@ -130,9 +156,10 @@ class ControlPanel(QWidget):
         self.btn_record.setToolTip("点击开始录音，再次点击停止并识别")
         voice_layout.addWidget(self.btn_record)
 
-        # 录音状态标签
-        self.label_record_status = QLabel("状态: 待命")
+        # 录音状态标签 (居中显示)
+        self.label_record_status = QLabel("待命")
         self.label_record_status.setProperty("class", "secondary")
+        self.label_record_status.setAlignment(Qt.AlignCenter)
         voice_layout.addWidget(self.label_record_status)
 
         layout.addWidget(voice_group)
@@ -194,19 +221,46 @@ class ControlPanel(QWidget):
         self.btn_export.clicked.connect(self.export_clicked.emit)
         self.btn_record.toggled.connect(self._on_record_toggled)
 
+        # 摄像头选择
+        self.combo_camera.currentIndexChanged.connect(self._on_camera_changed)
+        self.btn_refresh_cameras.clicked.connect(self.refresh_cameras_clicked.emit)
+
     def _on_record_toggled(self, checked: bool):
         """处理录音按钮切换"""
         if checked:
             self.btn_record.setText("[录音中...]")
-            self.label_record_status.setText("状态: 正在录音")
+            self.label_record_status.setText("正在录音...")
         else:
             self.btn_record.setText("点击录音")
-            self.label_record_status.setText("状态: 处理中...")
+            self.label_record_status.setText("处理中...")
         self.record_clicked.emit(checked)
 
     def set_record_status(self, status: str):
-        """设置录音状态文本"""
-        self.label_record_status.setText(f"状态: {status}")
+        """设置录音状态文本 (过滤识别结果，只显示简洁状态)"""
+        # 过滤掉识别结果，不在状态栏显示
+        if "识别完成" in status or "识别到" in status:
+            self.label_record_status.setText("待命")
+            return
+        # 简化状态显示
+        status_map = {
+            "正在加载 Whisper 模型...": "加载模型...",
+            "Whisper 模型加载完成": "模型就绪",
+            "正在录音...": "录音中...",
+            "录音为空": "录音为空",
+            "正在识别...": "识别中...",
+            "未识别到语音": "未识别到",
+            "语音检测器未初始化": "未初始化",
+            "语音检测器已释放": "待命",
+            "语音模态已禁用": "已禁用",
+            "语音模型加载失败": "加载失败",
+        }
+        # 处理重采样消息
+        if "重采样" in status:
+            self.label_record_status.setText("处理音频...")
+            return
+        # 使用映射或原状态
+        display_status = status_map.get(status, status)
+        self.label_record_status.setText(display_status)
 
     def is_modal_enabled(self, modal_name: str) -> bool:
         """检查指定模态是否启用"""
@@ -230,3 +284,37 @@ class ControlPanel(QWidget):
     def get_algorithm(self) -> str:
         """获取当前跟踪算法"""
         return self.combo_algorithm.currentText()
+
+    def _on_camera_changed(self, index: int):
+        """处理摄像头切换"""
+        camera_id = self.combo_camera.currentData()
+        if camera_id is not None:
+            self.camera_changed.emit(camera_id)
+
+    def update_camera_list(self, camera_ids: list):
+        """
+        更新摄像头列表
+
+        Args:
+            camera_ids: 可用摄像头ID列表
+        """
+        current_id = self.combo_camera.currentData()
+
+        # 阻止信号触发
+        self.combo_camera.blockSignals(True)
+        self.combo_camera.clear()
+
+        for cam_id in camera_ids:
+            self.combo_camera.addItem(f"摄像头 {cam_id}", cam_id)
+
+        # 尝试恢复之前的选择
+        if current_id is not None:
+            index = self.combo_camera.findData(current_id)
+            if index >= 0:
+                self.combo_camera.setCurrentIndex(index)
+
+        self.combo_camera.blockSignals(False)
+
+    def get_selected_camera(self) -> int:
+        """获取当前选择的摄像头ID"""
+        return self.combo_camera.currentData() or 0

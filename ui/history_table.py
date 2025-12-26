@@ -6,11 +6,11 @@ import json
 from datetime import datetime
 from typing import List, Dict, Any
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QLabel, QFileDialog,
-    QMessageBox
+    QMessageBox, QLineEdit, QComboBox, QPushButton
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 from detectors.base_detector import DetectionResult
 
@@ -57,6 +57,38 @@ class HistoryTable(QWidget):
         title = QLabel("命令历史")
         title.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
         layout.addWidget(title)
+
+        # ===== 筛选区域 =====
+        filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(5)
+
+        # 搜索框
+        self._search_input = QLineEdit()
+        self._search_input.setPlaceholderText("搜索指令...")
+        self._search_input.setToolTip("输入关键词筛选指令")
+        self._search_input.textChanged.connect(self._apply_filter)
+        filter_layout.addWidget(self._search_input, 2)
+
+        # 模态筛选下拉框
+        self._modal_filter = QComboBox()
+        self._modal_filter.addItem("全部", "all")
+        self._modal_filter.addItem("语音", "voice")
+        self._modal_filter.addItem("手势", "gesture")
+        self._modal_filter.addItem("图像", "image")
+        self._modal_filter.addItem("触屏", "touch")
+        self._modal_filter.setToolTip("按模态类型筛选")
+        self._modal_filter.currentIndexChanged.connect(self._apply_filter)
+        filter_layout.addWidget(self._modal_filter, 1)
+
+        # 清除筛选按钮
+        self._btn_clear_filter = QPushButton("清除")
+        self._btn_clear_filter.setProperty("class", "secondary")
+        self._btn_clear_filter.setMinimumWidth(60)
+        self._btn_clear_filter.setToolTip("清除筛选条件")
+        self._btn_clear_filter.clicked.connect(self._clear_filter)
+        filter_layout.addWidget(self._btn_clear_filter)
+
+        layout.addLayout(filter_layout)
 
         # 表格
         self._table = QTableWidget()
@@ -244,3 +276,53 @@ class HistoryTable(QWidget):
 
         for result in sample_results:
             self.add_result(result)
+
+    def _apply_filter(self):
+        """应用筛选条件"""
+        search_text = self._search_input.text().lower().strip()
+        modal_filter = self._modal_filter.currentData()
+
+        # 模态类型映射（用于匹配）
+        modal_display_to_type = {
+            "语音识别": "voice",
+            "手势识别": "gesture",
+            "图像识别": "image",
+            "触屏指令": "touch",
+        }
+
+        visible_count = 0
+        for row in range(self._table.rowCount()):
+            show_row = True
+
+            # 获取该行的指令和模态类型
+            command_item = self._table.item(row, 1)  # 指令列
+            modal_item = self._table.item(row, 2)    # 检测类型列
+
+            command_text = command_item.text().lower() if command_item else ""
+            modal_text = modal_item.text() if modal_item else ""
+            modal_type = modal_display_to_type.get(modal_text, "")
+
+            # 搜索筛选
+            if search_text and search_text not in command_text:
+                show_row = False
+
+            # 模态筛选
+            if modal_filter != "all" and modal_type != modal_filter:
+                show_row = False
+
+            self._table.setRowHidden(row, not show_row)
+            if show_row:
+                visible_count += 1
+
+        # 更新计数显示
+        total_count = len(self._history)
+        if search_text or modal_filter != "all":
+            self._count_label.setText(f"显示 {visible_count}/{total_count} 条记录")
+        else:
+            self._count_label.setText(f"共 {total_count} 条记录")
+
+    def _clear_filter(self):
+        """清除筛选条件"""
+        self._search_input.clear()
+        self._modal_filter.setCurrentIndex(0)  # 选择"全部"
+        self._apply_filter()

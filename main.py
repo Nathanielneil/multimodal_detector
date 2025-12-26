@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 多模态检测器 - 主入口文件
 
@@ -47,8 +48,8 @@ def main():
     app = QApplication(sys.argv)
 
     # 设置应用属性
-    app.setApplicationName("多模态检测器")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationName("Multimodal Detector")
+    app.setApplicationVersion("1.2.0")
     app.setOrganizationName("Multimodal")
 
     # 设置默认字体

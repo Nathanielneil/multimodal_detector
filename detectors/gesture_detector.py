@@ -35,6 +35,7 @@ class GestureType(Enum):
     THUMBS_DOWN = "集群高度下降"  # 向下大拇指
     OK = "指令确定"             # OK手势
     ROCK = "编队飞行"           # 三根手指（摇滚手势）
+    VICTORY = "向前飞行"        # V形手势（剪刀手）- 食指和中指伸直
 
 
 class GestureDetector(BaseDetector):
@@ -83,6 +84,7 @@ class GestureDetector(BaseDetector):
             "Right": {tip: [] for tip in self.FINGERTIP_IDS}
         }
         self._prev_hands_detected = set()  # 跟踪上一帧检测到的手
+        self._cached_results = None  # 缓存 MediaPipe 推理结果，避免重复计算
 
     def initialize(self) -> bool:
         """
@@ -97,7 +99,8 @@ class GestureDetector(BaseDetector):
 
             self._hands = mp_hands.Hands(
                 static_image_mode=False,
-                max_num_hands=self._max_hands,
+                max_num_hands=1,  # 只检测一只手，提升性能
+                model_complexity=0,  # 使用轻量模型 (0=Lite, 1=Full, 2=Heavy)
                 min_detection_confidence=self._min_detection_confidence,
                 min_tracking_confidence=self._min_tracking_confidence,
             )
@@ -128,9 +131,20 @@ class GestureDetector(BaseDetector):
 
         _lazy_import()
 
+        # 降采样以提升性能 (MediaPipe 内部会再次缩放)
+        h, w = data.shape[:2]
+        scale = 0.5 if w > 480 else 1.0  # 大于480p时降采样
+        if scale < 1.0:
+            small_frame = cv2.resize(data, None, fx=scale, fy=scale)
+        else:
+            small_frame = data
+
         # 转换 BGR -> RGB
-        rgb_frame = cv2.cvtColor(data, cv2.COLOR_BGR2RGB)
+        rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         results = self._hands.process(rgb_frame)
+
+        # 缓存结果供 draw_landmarks 复用
+        self._cached_results = results
 
         if not results.multi_hand_landmarks:
             self._reset_stable_count()
@@ -284,6 +298,10 @@ class GestureDetector(BaseDetector):
         if thumb_up and index_up and pinky_up and not middle_up and not ring_up:
             return GestureType.ROCK, 0.85
 
+        # V形手势（剪刀手）: 食指和中指伸直，其他弯曲 -> 向前飞行
+        if index_up and middle_up and not thumb_up and not ring_up and not pinky_up:
+            return GestureType.VICTORY, 0.85
+
         return GestureType.NONE, 0.0
 
     def _reset_stable_count(self):
@@ -307,8 +325,12 @@ class GestureDetector(BaseDetector):
         _lazy_import()
 
         h, w = frame.shape[:2]
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self._hands.process(rgb_frame)
+
+        # 使用缓存的结果，避免重复运行 MediaPipe 推理
+        results = self._cached_results
+        if results is None:
+            # 没有缓存时直接返回原帧 (跳帧模式下不运行推理)
+            return frame
 
         # 科研级配色方案 (更柔和专业)
         JOINT_COLORS = {
@@ -410,6 +432,9 @@ class GestureDetector(BaseDetector):
                 "Right": {tip: [] for tip in self.FINGERTIP_IDS}
             }
             self._prev_hands_detected = set()
+
+        # 注意: 不清除缓存，以支持跳帧绘制
+        # 缓存会在下次 detect() 调用时自动更新
 
         return frame
 
