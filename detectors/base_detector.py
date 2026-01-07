@@ -2,7 +2,7 @@
 检测器基类 - 定义所有检测器的通用接口
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Any, Dict
@@ -58,7 +58,7 @@ class BaseDetector(QObject):
     status_changed = Signal(str)
     error_occurred = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._enabled = True
         self._threshold = 0.5

@@ -27,13 +27,27 @@
 import sys
 import os
 
-# 设置代理 (用于下载模型，如 YOLO/Whisper)
-# 如果使用 clash-verge 或其他代理，取消下面两行的注释
-os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7890'
-os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
-
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 导入配置和日志模块
+from config import config
+from utils.logger import setup_logging_from_config, get_logger
+
+# 设置日志
+setup_logging_from_config(config)
+logger = get_logger(__name__)
+
+# 设置代理 (从配置文件读取)
+if config.get("proxy.enabled", False):
+    http_proxy = config.get("proxy.http", "")
+    https_proxy = config.get("proxy.https", "")
+    if http_proxy:
+        os.environ['HTTP_PROXY'] = http_proxy
+        logger.debug(f"HTTP proxy set to: {http_proxy}")
+    if https_proxy:
+        os.environ['HTTPS_PROXY'] = https_proxy
+        logger.debug(f"HTTPS proxy set to: {https_proxy}")
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
@@ -44,13 +58,25 @@ from ui.main_window import MainWindow
 
 def main():
     """应用入口函数"""
+    logger.info("Starting Multimodal Detector application")
+
+    # 验证配置
+    config_errors = config.validate()
+    if config_errors:
+        logger.warning(f"Configuration validation warnings: {config_errors}")
+
     # 创建应用实例
     app = QApplication(sys.argv)
 
-    # 设置应用属性
-    app.setApplicationName("Multimodal Detector")
-    app.setApplicationVersion("1.2.0")
+    # 从配置读取应用属性
+    app_name = config.get("app.name", "Multimodal Detector")
+    app_version = config.get("app.version", "2.13.0")
+
+    app.setApplicationName(app_name)
+    app.setApplicationVersion(app_version)
     app.setOrganizationName("Multimodal")
+
+    logger.info(f"Application: {app_name} v{app_version}")
 
     # 设置默认字体
     font = QFont("Microsoft YaHei", 10)
@@ -60,14 +86,23 @@ def main():
     # 高 DPI 支持 (Qt6 默认启用，无需手动设置)
 
     # 创建主窗口
-    window = MainWindow()
-    window.show()
+    try:
+        window = MainWindow()
+        window.show()
+        logger.info("Main window created successfully")
+    except Exception as e:
+        logger.critical(f"Failed to create main window: {e}", exc_info=True)
+        sys.exit(1)
 
     # 在状态栏显示欢迎消息
     window.statusBar().showMessage("欢迎使用多模态检测器！点击「启动摄像头」开始。", 5000)
 
     # 运行事件循环
-    sys.exit(app.exec())
+    logger.info("Entering main event loop")
+    exit_code = app.exec()
+
+    logger.info(f"Application exited with code: {exit_code}")
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

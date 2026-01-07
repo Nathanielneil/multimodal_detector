@@ -10,16 +10,20 @@ from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPoint, Qt, QEvent
+from PySide6.QtCore import QPoint, Qt, QEvent, QObject
 from PySide6.QtGui import QMouseEvent
 
 from .base_detector import BaseDetector, DetectionResult
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # 延迟导入
 cv2 = None
 Image = None
 ImageDraw = None
 ImageFont = None
+
 
 def _lazy_import():
     global cv2, Image, ImageDraw, ImageFont
@@ -75,7 +79,7 @@ class TouchDetector(BaseDetector):
     DRAG_COLOR = (255, 0, 255)        # 品红 - 拖动
     TRAJECTORY_MAX_LEN = 100          # 轨迹最大长度
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._double_click_interval = 300  # ms
         self._last_click_time: Optional[datetime] = None
@@ -241,7 +245,19 @@ class TouchDetector(BaseDetector):
         """
         识别手绘轨迹的形状
 
-        使用 OpenCV 轮廓分析和几何特征来识别形状
+        使用 OpenCV 轮廓分析和几何特征识别用户手绘的形状类型。
+        分析过程包括:
+        1. 将归一化坐标转换为图像坐标
+        2. 检查轨迹是否闭合 (起点终点距离 < 0.15)
+        3. 使用 Douglas-Peucker 算法简化轨迹获取顶点数
+        4. 计算圆度 (circularity) 和凸包凹陷
+        5. 根据几何特征匹配形状类型
+
+        Args:
+            trajectory: 归一化坐标 (0-1) 的轨迹点列表
+
+        Returns:
+            ShapeType: 识别到的形状类型，无法识别返回 ShapeType.NONE
         """
         _lazy_import()
 
@@ -267,12 +283,6 @@ class TouchDetector(BaseDetector):
         approx = cv2.approxPolyDP(points, epsilon, closed=is_closed)
         num_vertices = len(approx)
 
-        # 计算轮廓面积和周长
-        if is_closed:
-            contour = np.vstack([points, points[0:1]])  # 闭合轨迹
-        else:
-            contour = points
-
         # 计算凸包
         hull = cv2.convexHull(points)
         hull_area = cv2.contourArea(hull)
@@ -291,7 +301,8 @@ class TouchDetector(BaseDetector):
             if len(hull_indices) >= 3:
                 try:
                     defects = cv2.convexityDefects(points, hull_indices)
-                except:
+                except cv2.error:
+                    # OpenCV may fail if contour is degenerate
                     defects = None
 
         # 统计显著的凹陷数量（五角星特征）
@@ -330,8 +341,20 @@ class TouchDetector(BaseDetector):
 
         return ShapeType.NONE
 
-    def _load_font(self):
-        """加载中文字体"""
+    def _load_font(self) -> Any:
+        """
+        加载中文字体用于文字渲染
+
+        按优先级尝试加载系统中文字体:
+        1. 文泉驿正黑 (wqy-zenhei)
+        2. 文泉驿微米黑 (wqy-microhei)
+        3. Noto Sans CJK
+        4. Droid Sans Fallback
+        5. PIL 默认字体 (fallback)
+
+        Returns:
+            ImageFont: PIL 字体对象
+        """
         if self._font is not None:
             return self._font
 
@@ -346,7 +369,8 @@ class TouchDetector(BaseDetector):
             try:
                 self._font = ImageFont.truetype(path, 24)
                 return self._font
-            except:
+            except OSError:
+                # Font file not found or cannot be loaded
                 continue
         self._font = ImageFont.load_default()
         return self._font
@@ -421,7 +445,7 @@ class TouchDetector(BaseDetector):
                 color = (0, 0, 255)  # 红色
                 size = int(10 * alpha) + 5
                 cv2.rectangle(frame, (pos[0] - size, pos[1] - size),
-                             (pos[0] + size, pos[1] + size), color, 2)
+                              (pos[0] + size, pos[1] + size), color, 2)
             elif marker_type in ["drag_start", "drag_end"]:
                 color = self.DRAG_COLOR
                 cv2.drawMarker(frame, pos, color, cv2.MARKER_CROSS, 15, 2)
@@ -519,7 +543,8 @@ class TouchDetector(BaseDetector):
         try:
             bbox = draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
-        except:
+        except (AttributeError, TypeError):
+            # Fallback for older PIL versions without textbbox
             text_width = len(text) * 24
 
         text_x = center_x - text_width // 2

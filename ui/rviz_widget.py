@@ -334,7 +334,8 @@ class RVizWidget(QWidget):
         try:
             subprocess.run(['pkill', '-f', 'swarm_visualizer'], timeout=2)
             subprocess.run(['pkill', '-f', 'rviz'], timeout=2)
-        except:
+        except (subprocess.SubprocessError, OSError, TimeoutError):
+            # Process killing may fail if processes don't exist
             pass
 
         self._cleanup_ui()

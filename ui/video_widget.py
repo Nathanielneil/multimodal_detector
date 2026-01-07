@@ -267,7 +267,8 @@ class VideoWidget(QWidget):
             try:
                 font = ImageFont.truetype(path, 24)
                 break
-            except:
+            except OSError:
+                # Font file not found or cannot be loaded
                 continue
         if font is None:
             font = ImageFont.load_default()
@@ -277,7 +278,8 @@ class VideoWidget(QWidget):
             try:
                 small_font = ImageFont.truetype(path, 14)
                 break
-            except:
+            except OSError:
+                # Font file not found or cannot be loaded
                 continue
         if small_font is None:
             small_font = ImageFont.load_default()

@@ -17,6 +17,10 @@ from PySide6.QtGui import QCloseEvent, QKeyEvent, QShortcut, QKeySequence
 from .styles import MAIN_STYLESHEET
 from .control_panel import ControlPanel
 from .video_widget import VideoWidget
+from utils.logger import get_logger
+from config import config
+
+logger = get_logger(__name__)
 
 
 class CollapsibleDroneCard(QFrame):
@@ -276,10 +280,11 @@ class MainWindow(QMainWindow):
         self._frame_count = 0
         self._fps_start_time = time.time()
 
-        # 跳帧优化 - 重型检测器不需要每帧运行
+        # 跳帧优化 - 重型检测器不需要每帧运行 (从配置读取)
         self._detection_frame_count = 0
-        self._gesture_skip_frames = 4  # 每5帧运行一次手势检测 (~6 FPS 检测)
-        self._image_skip_frames = 5    # 每6帧运行一次图像检测 (~5 FPS 检测)
+        self._gesture_skip_frames = config.get("gesture.skip_frames", 4)
+        self._image_skip_frames = config.get("image.skip_frames", 5)
+        logger.debug(f"跳帧设置: gesture={self._gesture_skip_frames}, image={self._image_skip_frames}")
 
         # 各模态置信度
         self._confidences: Dict[str, float] = {
@@ -341,11 +346,13 @@ class MainWindow(QMainWindow):
                 try:
                     self._font = ImageFont.truetype(path, 18)
                     break
-                except:
+                except OSError:
+                    # Font file not found or cannot be loaded
                     continue
             if self._font is None:
                 self._font = ImageFont.load_default()
-        except:
+        except Exception:
+            # Fallback to default font on any unexpected error
             self._font = ImageFont.load_default()
 
     def _create_drone_status_panel(self) -> QWidget:
@@ -776,7 +783,7 @@ class MainWindow(QMainWindow):
         progress.set_status("正在加载预训练模型...")
         progress.set_progress(int(current_step / total_steps * 100))
         progress.set_detail(f"步骤 {current_step}/{total_steps} - 语音识别模块")
-        self._voice_detector = VoiceDetector(model_name="small")
+        self._voice_detector = VoiceDetector()  # 从 config 读取参数
         self._voice_detector.status_changed.connect(
             lambda s: self._control_panel.set_record_status(s)
         )
@@ -815,7 +822,7 @@ class MainWindow(QMainWindow):
         current_step += 1
         progress.set_progress(int(current_step / total_steps * 100))
         progress.set_detail(f"步骤 {current_step}/{total_steps} - 图像识别模块")
-        self._image_detector = ImageDetector(model_name="yolov8n")
+        self._image_detector = ImageDetector()  # 从 config 读取参数
         self._image_detector.detection_ready.connect(self._on_detection_result)
         self._image_detector.error_occurred.connect(self._on_detector_error)
         try:
@@ -1193,7 +1200,7 @@ class MainWindow(QMainWindow):
 
         if self._voice_detector is None:
             # 正常情况下不会到这里，因为在初始化时已创建
-            self._voice_detector = VoiceDetector(model_name="small")
+            self._voice_detector = VoiceDetector()  # 从 config 读取参数
             self._voice_detector.status_changed.connect(
                 lambda s: self._control_panel.set_record_status(s)
             )
@@ -1233,7 +1240,7 @@ class MainWindow(QMainWindow):
         """连接语音检测器与可视化叠加层的信号"""
         if self._voice_detector and hasattr(self._video_widget, 'voice_overlay'):
             overlay = self._video_widget.voice_overlay
-            print(f"[MainWindow] 连接语音可视化信号: overlay={overlay}")
+            logger.debug(f"连接语音可视化信号: overlay={overlay}")
 
             # 连接音量信号 (使用 QueuedConnection 确保线程安全)
             self._voice_detector.volume_changed.connect(
@@ -1244,9 +1251,9 @@ class MainWindow(QMainWindow):
             self._voice_detector.error_occurred.connect(
                 overlay.set_error, Qt.QueuedConnection
             )
-            print("[MainWindow] 语音可视化信号连接完成")
+            logger.debug("语音可视化信号连接完成")
         else:
-            print(f"[MainWindow] 无法连接语音可视化信号: detector={self._voice_detector}, has_overlay={hasattr(self._video_widget, 'voice_overlay')}")
+            logger.warning(f"无法连接语音可视化信号: detector={self._voice_detector}, has_overlay={hasattr(self._video_widget, 'voice_overlay')}")
 
     def _get_voice_command_text(self, text: str) -> str:
         """
@@ -1300,7 +1307,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_detection_result(self, result: DetectionResult):
         """处理检测结果"""
-        print(f"[MainWindow] 收到检测结果: 模态={result.modal_type}, 命令='{result.command}'")
+        logger.debug(f"收到检测结果: 模态={result.modal_type}, 命令='{result.command}'")
         # 添加到历史表格
         self._history_table.add_result(result)
 
@@ -1326,9 +1333,9 @@ class MainWindow(QMainWindow):
         """
         # 只处理置信度超过阈值的结果 (语音指令跳过此检查，因为 Whisper 已内置过滤)
         threshold = self._control_panel.get_recall_threshold()
-        print(f"[发布] 模态={result.modal_type}, 置信度={result.confidence:.2f}, 阈值={threshold:.2f}")
+        logger.debug(f"发布检测结果: 模态={result.modal_type}, 置信度={result.confidence:.2f}, 阈值={threshold:.2f}")
         if result.modal_type != "voice" and result.confidence < threshold:
-            print(f"[发布] 跳过：置信度低于阈值")
+            logger.debug("跳过发布：置信度低于阈值")
             return
 
         # ROS 是否可用
@@ -1367,7 +1374,7 @@ class MainWindow(QMainWindow):
             text: 语音识别文本
         """
         text_lower = text.lower()
-        print(f"[语音指令] 识别文本: '{text}' -> '{text_lower}'")  # 调试输出
+        logger.debug(f"语音指令识别: '{text}' -> '{text_lower}'")
 
         # 中文关键词映射
         voice_commands = {
@@ -1389,7 +1396,7 @@ class MainWindow(QMainWindow):
         for keywords, command in voice_commands.items():
             for keyword in keywords:
                 if keyword in text_lower:
-                    print(f"[语音指令] 匹配关键词: '{keyword}' -> {command.value}")
+                    logger.info(f"语音指令匹配: '{keyword}' -> {command.value}")
                     # 发送到 3D 可视化
                     self._swarm_view_3d.execute_command(command.value)
                     # 发送到 ROS (如果可用)
@@ -1412,7 +1419,7 @@ class MainWindow(QMainWindow):
         for keywords, formation in formation_keywords.items():
             for keyword in keywords:
                 if keyword in text_lower:
-                    print(f"[语音编队] 匹配关键词: '{keyword}' -> {formation.value}")
+                    logger.info(f"语音编队匹配: '{keyword}' -> {formation.value}")
                     # 发送到 3D 可视化
                     self._swarm_view_3d.change_formation(formation.value)
                     # 发送到 ROS (如果可用)
@@ -1424,7 +1431,7 @@ class MainWindow(QMainWindow):
                     return
 
         # 没有匹配到任何指令
-        print(f"[语音指令] 未匹配任何指令: '{text}'")
+        logger.debug(f"语音指令未匹配: '{text}'")
 
     @Slot(str)
     def _on_swarm_command_executed(self, command: str):

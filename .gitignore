@@ -31,6 +31,16 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+
+# User configuration (keep default.yaml, ignore user overrides)
+config/config.yaml
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
 
 # Model weights (large files)
 *.pt

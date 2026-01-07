@@ -4,9 +4,12 @@
 
 import cv2
 import numpy as np
-from typing import Optional
+from typing import Optional, Tuple, Any
 from threading import Lock
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, QObject
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class GestureWorker(QThread):
@@ -19,7 +22,7 @@ class GestureWorker(QThread):
     # 信号: 检测结果 (command, confidence, landmarks_data)
     result_ready = Signal(str, float, object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._running = False
         self._frame = None
@@ -40,7 +43,14 @@ class GestureWorker(QThread):
         self.cached_results_lock = Lock()
 
     def initialize(self) -> bool:
-        """初始化 MediaPipe"""
+        """
+        初始化 MediaPipe Hands 模型
+
+        加载 MediaPipe 手部检测模型，使用 Lite 模型复杂度以获得最佳性能。
+
+        Returns:
+            bool: 初始化是否成功
+        """
         try:
             import mediapipe as mp
             self._mp_hands = mp.solutions.hands
@@ -55,11 +65,19 @@ class GestureWorker(QThread):
             self._is_initialized = True
             return True
         except Exception as e:
-            print(f"GestureWorker 初始化失败: {e}")
+            logger.error(f"GestureWorker 初始化失败: {e}")
             return False
 
-    def submit_frame(self, frame: np.ndarray):
-        """提交新帧进行处理 (非阻塞)"""
+    def submit_frame(self, frame: np.ndarray) -> None:
+        """
+        提交新帧进行处理 (非阻塞)
+
+        将帧降采样后存入缓冲区，供工作线程异步处理。
+        如果前一帧尚未处理，新帧会覆盖旧帧。
+
+        Args:
+            frame: BGR 格式的 OpenCV 图像帧
+        """
         with self._frame_lock:
             # 降采样
             h, w = frame.shape[:2]
@@ -69,8 +87,14 @@ class GestureWorker(QThread):
                 self._frame = frame.copy()
             self._new_frame_available = True
 
-    def run(self):
-        """工作线程主循环"""
+    def run(self) -> None:
+        """
+        工作线程主循环
+
+        持续从帧缓冲区获取待处理的帧，执行手势识别，
+        并通过 result_ready 信号发送检测结果。
+        使用 msleep 控制处理频率，避免 CPU 过载。
+        """
         self._running = True
 
         while self._running:
@@ -97,12 +121,23 @@ class GestureWorker(QThread):
 
                     self.result_ready.emit(command, confidence, results)
             except Exception as e:
-                print(f"GestureWorker 处理错误: {e}")
+                logger.error(f"GestureWorker 处理错误: {e}")
 
             self.msleep(5)  # 控制处理频率
 
-    def _process_frame(self, frame: np.ndarray):
-        """处理单帧"""
+    def _process_frame(self, frame: np.ndarray) -> Optional[Tuple[str, float, Any]]:
+        """
+        处理单帧图像进行手势识别
+
+        将 BGR 帧转换为 RGB，通过 MediaPipe 处理，识别手势并检查稳定性。
+        只有当同一手势连续检测达到阈值次数时才返回结果。
+
+        Args:
+            frame: BGR 格式的 OpenCV 图像帧
+
+        Returns:
+            元组 (手势命令, 置信度, MediaPipe 结果)，无有效手势返回 None
+        """
         if not self._is_initialized or self._hands is None:
             return None
 
@@ -139,8 +174,28 @@ class GestureWorker(QThread):
 
         return (gesture, confidence, results)
 
-    def _recognize_gesture(self, hand_landmarks) -> tuple:
-        """识别手势"""
+    def _recognize_gesture(self, hand_landmarks: Any) -> Tuple[str, float]:
+        """
+        基于手部关键点识别手势类型
+
+        分析 MediaPipe 返回的 21 个手部关键点，判断每根手指的伸直/弯曲状态，
+        然后根据手指组合识别预定义的手势类型。
+
+        支持的手势:
+        - 握拳 (0指) -> 集群降落
+        - 张开手掌 (5指) -> 集群起飞
+        - 竖起大拇指 -> 集群高度上升/下降
+        - 食指指向 -> 集群悬停
+        - 摇滚手势 (3指) -> 编队飞行
+        - V形 (2指) -> 向前飞行
+        - OK手势 -> 指令确定
+
+        Args:
+            hand_landmarks: MediaPipe 手部关键点对象
+
+        Returns:
+            元组 (手势名称, 置信度)
+        """
         landmarks = [(lm.x, lm.y, lm.z) for lm in hand_landmarks.landmark]
 
         # 提取关键点
@@ -205,12 +260,12 @@ class GestureWorker(QThread):
 
         return ("无手势", 0.0)
 
-    def get_cached_results(self):
+    def get_cached_results(self) -> Any:
         """获取缓存的结果 (线程安全)"""
         with self.cached_results_lock:
             return self.cached_results
 
-    def stop(self):
+    def stop(self) -> None:
         """停止工作线程"""
         self._running = False
         self.wait(1000)  # 等待线程结束

@@ -3,10 +3,15 @@
 """
 
 import numpy as np
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, Tuple
 from dataclasses import dataclass
 
 from .base_detector import BaseDetector, DetectionResult
+from PySide6.QtCore import QObject
+from config import config
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # 延迟导入
 ultralytics = None
@@ -34,7 +39,7 @@ class BoundingBox:
     confidence: float
 
     @property
-    def center(self) -> tuple:
+    def center(self) -> Tuple[int, int]:
         return ((self.x1 + self.x2) // 2, (self.y1 + self.y2) // 2)
 
     @property
@@ -58,14 +63,17 @@ class ImageDetector(BaseDetector):
         iou_threshold: IoU 阈值（NMS用）
     """
 
-    def __init__(self, model_name: str = "yolov8m", parent=None):
+    def __init__(self, model_name: Optional[str] = None, parent: Optional[QObject] = None):
         super().__init__(parent)
-        self._model_name = model_name
+        # 从配置读取参数
+        self._model_name = model_name or config.get("image.model_name", "yolov8n")
         self._model = None
-        self._conf_threshold = 0.5
+        self._conf_threshold = config.get("image.confidence_threshold", 0.5)
         self._iou_threshold = 0.45
         self._target_classes: Optional[List[int]] = None  # 只检测特定类别
         self._last_detections: List[BoundingBox] = []
+
+        logger.debug(f"ImageDetector 初始化: model={self._model_name}, conf_threshold={self._conf_threshold}")
 
     def initialize(self) -> bool:
         """

@@ -6,7 +6,7 @@
 import cv2
 import numpy as np
 from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 
 class CameraWorker(QObject):
@@ -28,7 +28,7 @@ class CameraWorker(QObject):
     camera_opened = Signal()
     camera_closed = Signal()
 
-    def __init__(self, camera_id: int = 0, parent=None):
+    def __init__(self, camera_id: int = 0, parent: Optional[QObject] = None):
         """
         初始化摄像头工作类
 
@@ -189,7 +189,7 @@ class CameraWorker(QObject):
         return frame
 
     @staticmethod
-    def list_available_cameras(max_cameras: int = 5) -> list:
+    def list_available_cameras(max_cameras: int = 5) -> List[int]:
         """
         列出可用的摄像头设备
 
@@ -197,9 +197,9 @@ class CameraWorker(QObject):
             max_cameras: 最大检测数量
 
         Returns:
-            list: 可用摄像头ID列表
+            List[int]: 可用摄像头ID列表
         """
-        available = []
+        available: List[int] = []
         for i in range(max_cameras):
             cap = cv2.VideoCapture(i)
             if cap.isOpened():

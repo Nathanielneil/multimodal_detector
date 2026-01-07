@@ -7,6 +7,11 @@ from typing import Optional, Any, List, Tuple
 from enum import Enum
 
 from .base_detector import BaseDetector, DetectionResult
+from PySide6.QtCore import QObject
+from config import config
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # 延迟导入
 mp_hands = None
@@ -68,15 +73,19 @@ class GestureDetector(BaseDetector):
     # 指尖关键点索引
     FINGERTIP_IDS = [4, 8, 12, 16, 20]  # thumb, index, middle, ring, pinky
 
-    def __init__(self, max_hands: int = 2, parent=None):
+    def __init__(self, max_hands: Optional[int] = None, parent: Optional[QObject] = None):
         super().__init__(parent)
-        self._max_hands = max_hands
-        self._min_detection_confidence = 0.7
-        self._min_tracking_confidence = 0.5
+        # 从配置读取参数
+        self._max_hands = max_hands or config.get("gesture.max_hands", 1)
+        self._min_detection_confidence = config.get("gesture.min_detection_confidence", 0.7)
+        self._min_tracking_confidence = config.get("gesture.min_tracking_confidence", 0.5)
+        self._model_complexity = config.get("gesture.model_complexity", 0)
         self._hands = None
         self._last_gesture = GestureType.NONE
         self._gesture_stable_count = 0
-        self._stable_threshold = 5  # 连续检测到相同手势的次数阈值
+        self._stable_threshold = config.get("gesture.stable_threshold", 5)
+
+        logger.debug(f"GestureDetector 初始化: max_hands={self._max_hands}, stable_threshold={self._stable_threshold}")
         # 指尖轨迹记录 {handedness: {fingertip_id: [(x, y), ...]}}
         # 使用 "Left"/"Right" 作为键，而不是检测索引
         self._trajectories = {
@@ -99,11 +108,12 @@ class GestureDetector(BaseDetector):
 
             self._hands = mp_hands.Hands(
                 static_image_mode=False,
-                max_num_hands=1,  # 只检测一只手，提升性能
-                model_complexity=0,  # 使用轻量模型 (0=Lite, 1=Full, 2=Heavy)
+                max_num_hands=self._max_hands,
+                model_complexity=self._model_complexity,  # 0=Lite, 1=Full, 2=Heavy
                 min_detection_confidence=self._min_detection_confidence,
                 min_tracking_confidence=self._min_tracking_confidence,
             )
+            logger.info(f"MediaPipe Hands 初始化: complexity={self._model_complexity}, max_hands={self._max_hands}")
 
             self._is_initialized = True
             self.status_changed.emit("手势检测器初始化完成")
@@ -384,7 +394,7 @@ class GestureDetector(BaseDetector):
                         alpha = i / len(trajectory)  # 越新越不透明
                         thickness = max(1, int(3 * alpha))
                         color = tuple(int(c * alpha) for c in tip_color)
-                        cv2.line(frame, trajectory[i-1], trajectory[i], color, thickness)
+                        cv2.line(frame, trajectory[i - 1], trajectory[i], color, thickness)
 
                 # 绘制连接线
                 for connection in mp_hands.HAND_CONNECTIONS:
@@ -424,7 +434,7 @@ class GestureDetector(BaseDetector):
                 # MediaPipe 从摄像头视角判断，需要翻转
                 display_hand = "Right" if handedness == "Left" else "Left"
                 cv2.putText(frame, display_hand, (wrist_x - 25, wrist_y - 20),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, hand_color, 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, hand_color, 2)
         else:
             # 没有检测到手，清空轨迹和记录
             self._trajectories = {

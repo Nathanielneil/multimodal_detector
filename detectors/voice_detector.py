@@ -8,10 +8,13 @@ import threading
 import tempfile
 import os
 from typing import Optional, Any
-from datetime import datetime
 
 from .base_detector import BaseDetector, DetectionResult
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, QObject
+from utils.logger import get_logger
+from config import config
+
+logger = get_logger(__name__)
 
 # 延迟导入，避免启动时加载
 whisper = None
@@ -54,22 +57,22 @@ class VoiceDetector(BaseDetector):
     recording_started = Signal()        # 录音开始
     recording_stopped = Signal()        # 录音停止
 
-    # USB 麦克风设备配置
-    USB_MIC_DEVICE = 7  # UGREEN CM564 USB Audio
-
-    def __init__(self, model_name: str = "small", parent=None):
+    def __init__(self, model_name: Optional[str] = None, parent: Optional[QObject] = None):
         super().__init__(parent)
         # 语音检测器不使用置信度过滤 (Whisper 已有内置过滤)
-        self._threshold = 0.0
+        self._threshold = config.get("voice.threshold", 0.0)
 
-        self._model_name = model_name
+        # 从配置读取参数，允许构造函数参数覆盖
+        self._model_name = model_name or config.get("voice.model_name", "small")
         self._model = None
-        self._whisper_sample_rate = 16000  # Whisper 需要的采样率
-        self._language = "zh"
+        self._whisper_sample_rate = config.get("voice.sample_rate", 16000)
+        self._language = config.get("voice.language", "zh")
 
         # 音频设备 (None = 系统默认, 数字 = 指定设备ID)
-        self._audio_device = self.USB_MIC_DEVICE  # 使用 USB 麦克风
+        self._audio_device = config.get("voice.audio_device", None)
         self._device_sample_rate = 48000  # 会在录音时动态更新
+
+        logger.debug(f"VoiceDetector 初始化: model={self._model_name}, device={self._audio_device}, lang={self._language}")
 
         # 录音相关
         self._is_recording = False
@@ -221,7 +224,7 @@ class VoiceDetector(BaseDetector):
                     callback=callback,
                     blocksize=1024
                 )
-            except Exception as device_error:
+            except Exception:
                 # 指定设备不可用，回退到默认设备和默认采样率
                 self.status_changed.emit(f"设备 {device_to_use} 不可用，使用默认设备")
                 self._audio_device = None
@@ -296,7 +299,7 @@ class VoiceDetector(BaseDetector):
             )
 
             self.status_changed.emit(f"识别完成: {text[:20]}...")
-            print(f"[VoiceDetector] 发射识别结果: '{text}', 置信度={confidence:.2f}")
+            logger.debug(f"发射识别结果: '{text}', 置信度={confidence:.2f}")
             self.emit_result(detection)
             return detection
 

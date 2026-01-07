@@ -21,6 +21,9 @@ from PySide6.QtGui import QFont
 
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class FormationType(Enum):
@@ -2094,10 +2097,10 @@ class SwarmView3D(QWidget):
         Args:
             command: 指令字符串 (SwarmCommand.value)
         """
-        print(f"[3D视图] execute_command: {command}, is_flying={self.is_flying}")
+        logger.debug(f"execute_command: {command}, is_flying={self.is_flying}")
         if command == SwarmCommand.TAKEOFF.value or command == "takeoff":
             self._execute_takeoff()
-            print(f"[3D视图] 起飞后 is_flying={self.is_flying}")
+            logger.debug(f"起飞后 is_flying={self.is_flying}")
         elif command == SwarmCommand.LAND.value or command == "land":
             self._execute_land()
         elif command == SwarmCommand.HOVER.value or command == "hover":
@@ -2126,10 +2129,10 @@ class SwarmView3D(QWidget):
             formation: 编队类型字符串
             drone_count: 无人机数量 (可选)
         """
-        print(f"[编队] change_formation 调用: formation={formation}, is_flying={self.is_flying}")
+        logger.debug(f"change_formation: formation={formation}, is_flying={self.is_flying}")
         # 必须在飞行状态下才能编队
         if not self.is_flying:
-            print(f"[编队] 忽略：无人机未起飞")
+            logger.debug("编队忽略：无人机未起飞")
             return
 
         # 解析编队类型
@@ -2148,14 +2151,14 @@ class SwarmView3D(QWidget):
         self.current_formation = new_formation
         self.in_formation = True  # 标记已进入编队
         positions = self._generate_formation_positions(new_formation, self.current_altitude)
-        print(f"[编队] 生成 {len(positions)} 个位置，编队类型={new_formation.value}")
+        logger.debug(f"生成 {len(positions)} 个位置，编队类型={new_formation.value}")
 
         for i, (drone, pos) in enumerate(zip(self.drones, positions)):
             drone.set_target(pos)
-            print(f"[编队] 无人机 {i} 目标位置: {pos}")
+            logger.debug(f"无人机 {i} 目标位置: {pos}")
 
         self._update_status_display()
-        print(f"[编队] 编队变换完成")
+        logger.info("编队变换完成")
 
     def _execute_formation(self):
         """执行编队 - 使用当前编队类型进入编队"""

@@ -10,6 +10,9 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List
 from datetime import datetime
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ROS imports (延迟导入，避免非ROS环境报错)
 _ros_available = False
@@ -116,7 +119,7 @@ class ROSBridge:
             bool: 是否初始化成功
         """
         if not _ros_available:
-            print("[ROSBridge] ROS not available. Install rospy to enable ROS features.")
+            logger.info("ROS not available. Install rospy to enable ROS features.")
             return False
 
         if self._initialized:
@@ -143,11 +146,11 @@ class ROSBridge:
             )
 
             self._initialized = True
-            print(f"[ROSBridge] ROS node '{self._node_name}' initialized successfully")
+            logger.info(f"ROS node '{self._node_name}' initialized successfully")
             return True
 
         except Exception as e:
-            print(f"[ROSBridge] Failed to initialize ROS: {e}")
+            logger.error(f"Failed to initialize ROS: {e}")
             return False
 
     def shutdown(self):
@@ -155,7 +158,8 @@ class ROSBridge:
         if self._initialized:
             try:
                 rospy.signal_shutdown("Application closing")
-            except:
+            except Exception:
+                # ROS shutdown may fail if not properly initialized
                 pass
             self._initialized = False
 
@@ -168,7 +172,7 @@ class ROSBridge:
             params: 附加参数
         """
         if not self._initialized:
-            print(f"[ROSBridge] Not initialized, command '{command.value}' not sent")
+            logger.warning(f"Not initialized, command '{command.value}' not sent")
             return
 
         import json
@@ -181,7 +185,7 @@ class ROSBridge:
         msg = String()
         msg.data = json.dumps(msg_data)
         self._publishers["command"].publish(msg)
-        print(f"[ROSBridge] Published command: {command.value}")
+        logger.debug(f"Published command: {command.value}")
 
     def publish_formation(self, formation: FormationType, drone_count: int = 6):
         """
@@ -192,7 +196,7 @@ class ROSBridge:
             drone_count: 无人机数量
         """
         if not self._initialized:
-            print(f"[ROSBridge] Not initialized, formation '{formation.value}' not sent")
+            logger.warning(f"Not initialized, formation '{formation.value}' not sent")
             return
 
         import json
@@ -205,7 +209,7 @@ class ROSBridge:
         msg = String()
         msg.data = json.dumps(msg_data)
         self._publishers["formation"].publish(msg)
-        print(f"[ROSBridge] Published formation: {formation.value}")
+        logger.debug(f"Published formation: {formation.value}")
 
     def publish_drone_markers(self, positions: List[tuple], colors: List[tuple] = None):
         """
@@ -329,7 +333,7 @@ class ROSBridge:
             for callback in self._state_callbacks:
                 callback(data)
         except Exception as e:
-            print(f"[ROSBridge] Status parse error: {e}")
+            logger.error(f"Status parse error: {e}")
 
     def register_status_callback(self, callback: Callable):
         """注册状态更新回调"""

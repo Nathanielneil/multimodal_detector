@@ -1,0 +1,178 @@
+# Multimodal Detector Configuration
+# Version: 2.13
+
+# =============================================================================
+# Application Settings
+# =============================================================================
+app:
+  name: "Multimodal Detector"
+  version: "2.13.0"
+  language: "zh"  # zh, en
+  theme: "light"  # light, dark (future)
+
+# =============================================================================
+# Proxy Settings (for model downloads)
+# =============================================================================
+proxy:
+  enabled: false
+  http: "http://127.0.0.1:7890"
+  https: "http://127.0.0.1:7890"
+
+# =============================================================================
+# Camera Settings
+# =============================================================================
+camera:
+  default_id: 0
+  width: 640
+  height: 480
+  fps: 30
+  auto_start: false
+
+# =============================================================================
+# Voice Detector Settings
+# =============================================================================
+voice:
+  enabled: true
+  model_name: "small"  # tiny, base, small, medium, large
+  language: "zh"
+  sample_rate: 16000
+  # Audio device settings
+  audio_device: null  # null for default, or device ID (e.g., 7)
+  # Confidence threshold (0.0-1.0)
+  threshold: 0.0  # Whisper has built-in filtering
+
+# =============================================================================
+# Gesture Detector Settings
+# =============================================================================
+gesture:
+  enabled: true
+  max_hands: 1
+  model_complexity: 0  # 0=Lite, 1=Full, 2=Heavy
+  min_detection_confidence: 0.7
+  min_tracking_confidence: 0.5
+  # Stability settings
+  stable_threshold: 5  # Frames needed for stable detection
+  # Skip frames for performance
+  skip_frames: 4  # Run detection every N+1 frames
+  # Trajectory settings
+  trajectory_max_len: 5
+
+# =============================================================================
+# Image Detector Settings
+# =============================================================================
+image:
+  enabled: true
+  model_name: "yolov8n"  # yolov8n, yolov8s, yolov8m, yolov8l, yolov8x
+  confidence_threshold: 0.5
+  # Skip frames for performance
+  skip_frames: 5
+
+# =============================================================================
+# Touch Detector Settings
+# =============================================================================
+touch:
+  enabled: true
+  # Shape recognition settings
+  min_points: 10
+  shape_similarity_threshold: 0.7
+
+# =============================================================================
+# 3D Visualization Settings
+# =============================================================================
+visualization:
+  # Arena settings
+  arena_size: 32  # meters
+  boundary_margin: 1.0
+  # Drone settings
+  drone_count: 6
+  max_drones: 12
+  min_drones: 1
+  # Trajectory settings
+  trajectory_buffer_size: 200
+  # APF (Artificial Potential Field) settings
+  apf_enabled: true
+  apf_smoothing: 0.3  # EMA alpha
+
+# =============================================================================
+# ROS Bridge Settings
+# =============================================================================
+ros:
+  enabled: true
+  node_name: "multimodal_detector"
+  # Topics
+  topics:
+    command: "/swarm/command"
+    formation: "/swarm/formation"
+    status: "/swarm/status"
+    visualization: "/swarm/visualization"
+
+# =============================================================================
+# Logging Settings
+# =============================================================================
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  # Console output
+  console:
+    enabled: true
+    format: "[%(asctime)s] %(levelname)s - %(name)s - %(message)s"
+    date_format: "%H:%M:%S"
+  # File output
+  file:
+    enabled: true
+    path: "logs/multimodal_detector.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+    format: "[%(asctime)s] %(levelname)s - %(name)s - %(filename)s:%(lineno)d - %(message)s"
+    date_format: "%Y-%m-%d %H:%M:%S"
+
+# =============================================================================
+# UI Settings
+# =============================================================================
+ui:
+  # Window settings
+  window:
+    min_width: 1280
+    min_height: 720
+    default_width: 1280
+    default_height: 720
+  # Splitter ratios
+  splitter:
+    left: 240
+    center: 700
+    right: 280
+  # Update intervals (ms)
+  frame_interval: 16  # ~60 FPS target
+  status_update_interval: 5  # Update drone status every N frames
+
+# =============================================================================
+# Command Mappings
+# =============================================================================
+commands:
+  # Gesture to swarm command mappings
+  gestures:
+    "集群起飞": "takeoff"
+    "集群降落": "land"
+    "集群悬停": "hover"
+    "编队飞行": "formation"
+    "指令确定": "confirm"
+    "集群高度上升": "altitude_up"
+    "集群高度下降": "altitude_down"
+    "向前飞行": "move_forward"
+
+  # Shape to formation mappings
+  shapes:
+    "triangle": "triangle"
+    "square": "square"
+    "circle": "circle"
+    "star": "star"
+    "line": "line"
+
+  # Voice command keywords
+  voice_keywords:
+    takeoff: ["起飞", "takeoff", "take off", "升空", "飞", "起来"]
+    land: ["降落", "land", "着陆", "落地", "落下"]
+    hover: ["悬停", "旋停", "选停", "hover", "停", "暂停", "停住", "定住"]
+    altitude_up: ["上升", "升高", "go up", "higher", "高一点", "往上"]
+    altitude_down: ["下降", "降低", "go down", "lower", "低一点", "往下"]
+    move_forward: ["向前", "前进", "forward", "向前飞", "往前飞", "往前", "前飞"]
+    emergency: ["紧急停止", "急停", "emergency", "stop", "紧急"]

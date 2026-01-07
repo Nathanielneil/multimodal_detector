@@ -16,6 +16,9 @@ from collections import deque
 import time
 import math
 import random
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class NeonWaveformWidget(QWidget):
@@ -501,7 +504,7 @@ class VoiceOverlayWidget(QWidget):
 
         self.show()
         self.raise_()
-        print(f"[VoiceOverlay] 显示叠加层: geometry={self.geometry()}, visible={self.isVisible()}")
+        logger.debug(f"显示叠加层: geometry={self.geometry()}, visible={self.isVisible()}")
 
     @Slot()
     def stop_recording(self):
@@ -533,7 +536,7 @@ class VoiceOverlayWidget(QWidget):
                 self._vol_count = 0
             self._vol_count += 1
             if self._vol_count % 10 == 0:
-                print(f"[VoiceOverlay] 音量更新: {volume:.2f}, waveform激活={self._waveform._is_active}")
+                logger.debug(f"音量更新: {volume:.2f}, waveform激活={self._waveform._is_active}")
 
     @Slot(str, float, str)
     def set_result(self, text: str, confidence: float, command: str = ""):
