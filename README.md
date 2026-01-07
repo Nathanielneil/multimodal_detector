@@ -1,120 +1,593 @@
 # 多模态检测器 (Multimodal Detector)
 
-基于 PySide6 + OpenCV 的桌面应用，集成语音识别、手势识别、图像识别和触屏指令检测四种模态。
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PySide6](https://img.shields.io/badge/GUI-PySide6-green.svg)](https://doc.qt.io/qtforpython/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/badge/version-2.14.0-brightgreen.svg)]()
+
+基于 **PySide6 + OpenCV** 的多模态人机交互系统，集成语音识别、手势识别、图像识别和触屏指令检测四种交互模态，支持无人机集群的 3D 可视化控制和 ROS 集成。
+
+<p align="center">
+  <img src="docs/images/screenshot.png" alt="应用截图" width="800">
+</p>
+
+## 目录
+
+- [功能特性](#功能特性)
+- [系统架构](#系统架构)
+- [系统要求](#系统要求)
+- [安装指南](#安装指南)
+- [快速开始](#快速开始)
+- [项目结构](#项目结构)
+- [配置说明](#配置说明)
+- [使用指南](#使用指南)
+- [API 文档](#api-文档)
+- [开发指南](#开发指南)
+- [常见问题](#常见问题)
+- [更新日志](#更新日志)
+- [许可证](#许可证)
 
 ## 功能特性
 
-- **语音识别**: 使用 OpenAI Whisper 进行语音转文字
-- **手势识别**: 使用 MediaPipe Hands 检测手部关键点并识别手势
-- **图像识别**: 使用 YOLOv8m 进行实时物体检测
-- **触屏指令**: 检测视频区域的鼠标点击事件
+### 四种交互模态
+
+| 模态 | 技术方案 | 功能描述 |
+|------|----------|----------|
+| 🎤 **语音识别** | OpenAI Whisper | 实时语音转文字，支持中英文指令识别 |
+| 🖐️ **手势识别** | MediaPipe Hands | 21 点手部关键点检测，识别 8+ 种手势 |
+| 📷 **图像识别** | YOLOv8 | 80+ 类物体实时检测，可自定义模型 |
+| 👆 **触屏指令** | OpenCV | 支持点击、双击、拖拽、形状绘制 |
+
+### 3D 无人机集群可视化
+
+- **实时渲染**: 基于 PyQtGraph + OpenGL 的高性能 3D 可视化
+- **编队控制**: 支持三角形、方形、圆形、五角星、直线等编队
+- **路径规划**: APF (人工势场) 算法避障
+- **障碍物仿真**: 圆柱体/方块障碍物点云渲染
+
+### ROS 集成
+
+- 支持 ROS1 (rospy) 无缝集成
+- 发布集群控制指令和编队信息
+- 订阅集群状态更新
+- 可视化 Marker 发布
+
+### 其他特性
+
+- 📊 **检测历史记录**: 时间线式检测结果展示，支持 JSON 导出
+- ⚙️ **YAML 配置系统**: 灵活的配置管理，支持热重载
+- 📝 **统一日志系统**: 控制台 + 文件双输出，支持日志轮转
+- 🎨 **现代化 UI**: 深色主题，响应式布局
+- 🔌 **USB 麦克风支持**: 可配置外接音频设备
+
+## 系统架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Main Window (PySide6)                     │
+├──────────────┬──────────────────────────┬───────────────────────┤
+│ Control Panel│      Video Display       │   3D Swarm View       │
+│   (左栏)      │        (中栏)             │     (右栏)            │
+│              │  ┌──────────────────┐    │  ┌─────────────────┐  │
+│ □ 语音识别    │  │   Camera Feed    │    │  │  OpenGL Scene   │  │
+│ □ 手势识别    │  │  + Overlays      │    │  │  6x Drones      │  │
+│ □ 图像识别    │  └──────────────────┘    │  │  + Obstacles    │  │
+│ □ 触屏检测    │                          │  └─────────────────┘  │
+│              │  Voice Overlay           │                       │
+└──────────────┴──────────────────────────┴───────────────────────┘
+        │                  │                        │
+        ▼                  ▼                        ▼
+┌──────────────┐  ┌────────────────┐      ┌────────────────┐
+│   Workers    │  │   Detectors    │      │   ROS Bridge   │
+│ CameraWorker │  │ VoiceDetector  │      │  /swarm/cmd    │
+│ GestureWorker│  │ GestureDetector│      │  /swarm/state  │
+└──────────────┘  │ ImageDetector  │      └────────────────┘
+                  │ TouchDetector  │
+                  └────────────────┘
+```
 
 ## 系统要求
 
-- Ubuntu 20.04+
-- Python 3.10
-- NVIDIA GPU (可选，用于 CUDA 加速)
-- 摄像头设备
+### 硬件要求
 
-## 安装步骤
+| 组件 | 最低配置 | 推荐配置 |
+|------|----------|----------|
+| CPU | 4 核 2.0GHz | 8 核 3.0GHz+ |
+| 内存 | 8 GB | 16 GB+ |
+| GPU | 集成显卡 | NVIDIA GTX 1060+ (CUDA) |
+| 摄像头 | 720p USB | 1080p USB/内置 |
+| 麦克风 | 内置/USB | 高质量 USB 麦克风 |
 
-### 1. 创建 Conda 环境
+### 软件要求
+
+- **操作系统**: Ubuntu 20.04 / 22.04 LTS
+- **Python**: 3.10 或 3.11
+- **CUDA**: 11.8+ (可选，用于 GPU 加速)
+- **ROS**: Noetic (可选，用于 ROS 集成)
+
+## 安装指南
+
+### 方式一: Conda 环境 (推荐)
 
 ```bash
+# 克隆仓库
+git clone https://github.com/Nathanielneil/multimodal_detector.git
 cd multimodal_detector
+
+# 创建并激活环境
 conda env create -f environment.yml
 conda activate multimodal
+
+# 验证安装
+python -c "import PySide6; import cv2; import whisper; print('安装成功!')"
 ```
 
-### 2. 运行应用
+### 方式二: pip 安装
 
 ```bash
+# 创建虚拟环境
+python -m venv venv
+source venv/bin/activate
+
+# 安装依赖
+pip install -e .
+
+# 安装开发依赖 (可选)
+pip install -e ".[dev]"
+```
+
+### 方式三: ROS 集成安装
+
+```bash
+# 安装 ROS 依赖
+pip install -e ".[ros]"
+
+# 编译 ROS 工作空间
+cd catkin_ws
+catkin_make
+source devel/setup.bash
+```
+
+### GPU 加速配置 (可选)
+
+```bash
+# 安装 CUDA 版本的 PyTorch
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# 验证 CUDA
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+```
+
+## 快速开始
+
+### 基本启动
+
+```bash
+# 激活环境
+conda activate multimodal
+
+# 启动应用
 python main.py
+```
+
+### 带配置启动
+
+```bash
+# 使用自定义配置
+cp config/default.yaml config/config.yaml
+# 编辑 config/config.yaml
+python main.py
+```
+
+### 命令行参数
+
+```bash
+# 查看帮助
+python main.py --help
+
+# 指定摄像头
+python main.py --camera 1
+
+# 调试模式
+python main.py --debug
 ```
 
 ## 项目结构
 
 ```
 multimodal_detector/
-├── main.py                 # 应用入口
-├── environment.yml         # Conda 环境配置
-├── README.md
-├── ui/                     # UI 组件
+├── main.py                     # 应用入口
+├── pyproject.toml              # 项目配置 (PEP 621)
+├── environment.yml             # Conda 环境配置
+├── pytest.ini                  # pytest 配置
+├── README.md                   # 项目文档
+│
+├── config/                     # 配置模块
 │   ├── __init__.py
-│   ├── main_window.py      # 主窗口
-│   ├── control_panel.py    # 左栏控制面板
-│   ├── video_widget.py     # 中栏视频显示
-│   ├── history_table.py    # 右栏历史表格
-│   └── styles.py           # QSS 样式
-├── workers/                # 后台工作类
+│   ├── config.py               # 配置管理器
+│   └── default.yaml            # 默认配置
+│
+├── detectors/                  # 检测器模块
 │   ├── __init__.py
-│   └── camera_worker.py    # 摄像头管理
-└── detectors/              # 检测器模块
-    ├── __init__.py
-    ├── base_detector.py    # 检测器基类
-    ├── voice_detector.py   # 语音识别 (Whisper)
-    ├── gesture_detector.py # 手势识别 (MediaPipe)
-    ├── image_detector.py   # 图像识别 (YOLOv8)
-    └── touch_detector.py   # 触屏指令
+│   ├── base_detector.py        # 检测器基类
+│   ├── voice_detector.py       # 语音识别 (Whisper)
+│   ├── gesture_detector.py     # 手势识别 (MediaPipe)
+│   ├── image_detector.py       # 图像识别 (YOLOv8)
+│   └── touch_detector.py       # 触屏指令检测
+│
+├── ui/                         # UI 组件
+│   ├── __init__.py
+│   ├── main_window.py          # 主窗口
+│   ├── control_panel.py        # 控制面板
+│   ├── video_widget.py         # 视频显示
+│   ├── voice_overlay.py        # 语音可视化叠加层
+│   ├── swarm_view_3d.py        # 3D 集群可视化
+│   ├── rviz_widget.py          # RViz 嵌入组件
+│   ├── history_table.py        # 历史记录表格
+│   ├── progress_dialog.py      # 进度对话框
+│   └── styles.py               # QSS 样式表
+│
+├── workers/                    # 后台工作线程
+│   ├── __init__.py
+│   ├── camera_worker.py        # 摄像头采集
+│   └── gesture_worker.py       # 手势处理
+│
+├── ros_bridge/                 # ROS 桥接模块
+│   ├── __init__.py
+│   └── ros_bridge.py           # ROS 通信
+│
+├── utils/                      # 工具模块
+│   ├── __init__.py
+│   └── logger.py               # 日志管理
+│
+├── tests/                      # 测试用例
+│   ├── __init__.py
+│   ├── conftest.py             # pytest fixtures
+│   ├── test_config.py          # 配置测试
+│   ├── test_detectors.py       # 检测器测试
+│   └── test_logger.py          # 日志测试
+│
+└── catkin_ws/                  # ROS 工作空间
+    └── src/
+        └── swarm_visualizer/   # ROS 可视化节点
 ```
 
-## 使用说明
+## 配置说明
+
+配置文件位于 `config/default.yaml`，支持以下配置项：
+
+### 应用配置
+
+```yaml
+app:
+  name: "Multimodal Detector"
+  version: "2.14.0"
+  language: "zh"  # zh, en
+```
+
+### 检测器配置
+
+```yaml
+# 语音检测器
+voice:
+  model_name: "small"  # tiny, base, small, medium, large
+  language: "zh"
+  audio_device: null   # null=默认, 数字=设备ID
+
+# 手势检测器
+gesture:
+  max_hands: 1
+  model_complexity: 0  # 0=Lite, 1=Full, 2=Heavy
+  min_detection_confidence: 0.7
+  skip_frames: 4       # 跳帧优化
+
+# 图像检测器
+image:
+  model_name: "yolov8n"  # n/s/m/l/x
+  confidence_threshold: 0.5
+  skip_frames: 5
+```
+
+### 3D 可视化配置
+
+```yaml
+visualization:
+  arena_size: 32        # 场地大小 (米)
+  drone_count: 6        # 无人机数量
+  apf_enabled: true     # APF 避障
+```
+
+### 日志配置
+
+```yaml
+logging:
+  level: "INFO"         # DEBUG, INFO, WARNING, ERROR
+  file:
+    enabled: true
+    path: "logs/multimodal_detector.log"
+    max_bytes: 10485760  # 10MB
+    backup_count: 5
+```
+
+## 使用指南
 
 ### 界面布局
 
-- **左栏**: 控制面板 - 启用/禁用各模态、设置阈值、重置统计、导出历史
-- **中栏**: 视频显示 - 实时摄像头画面，右侧显示四模态状态
-- **右栏**: 历史表格 - 所有检测结果的时间线记录
+```
+┌─────────────────────────────────────────────────────────────┐
+│  文件  设置  帮助                              [_][□][X]    │
+├────────────┬────────────────────────┬───────────────────────┤
+│            │                        │                       │
+│  控制面板   │      视频画面          │    3D 集群视图         │
+│            │                        │                       │
+│ [启动摄像头] │  ┌──────────────────┐  │  ┌─────────────────┐  │
+│            │  │                  │  │  │    ▲            │  │
+│ ☑ 语音识别  │  │   实时摄像头画面   │  │  │   ●●●          │  │
+│ ☑ 手势识别  │  │   + 检测叠加层    │  │  │  ●   ●         │  │
+│ ☑ 图像识别  │  │                  │  │  │    ●           │  │
+│ ☑ 触屏检测  │  └──────────────────┘  │  └─────────────────┘  │
+│            │                        │                       │
+│ [🎤 录音]   │  语音可视化叠加层       │  [起飞] [降落] [悬停]  │
+│            │                        │                       │
+├────────────┴────────────────────────┴───────────────────────┤
+│  检测历史记录                                                │
+│  ┌───────┬────────┬──────────┬────────┐                    │
+│  │ 时间   │ 模态   │ 命令     │ 置信度  │                    │
+│  ├───────┼────────┼──────────┼────────┤                    │
+│  │ 12:30 │ 手势   │ 起飞     │ 0.95   │                    │
+│  │ 12:31 │ 语音   │ 三角编队  │ 0.88   │                    │
+│  └───────┴────────┴──────────┴────────┘                    │
+└─────────────────────────────────────────────────────────────┘
+```
 
-### 操作流程
+### 基本操作流程
 
-1. 点击「启动摄像头」按钮开始视频采集
-2. 使用左侧复选框启用/禁用各模态检测
-3. 点击「🎤 点击录音」按钮进行语音识别
-4. 在视频区域点击鼠标触发触屏指令
-5. 点击「导出历史」将检测记录保存为 JSON 文件
+1. **启动摄像头**: 点击「启动摄像头」按钮
+2. **启用模态**: 勾选需要的检测模态
+3. **语音录制**: 点击「🎤 录音」按钮，说出指令
+4. **触屏绘制**: 在视频区域拖拽绘制形状
+5. **3D 控制**: 使用右侧按钮控制无人机集群
+6. **导出历史**: 点击「导出历史」保存检测记录
 
 ### 支持的手势
 
-- 握拳
-- 张开手掌
-- 指向
-- 竖起大拇指
-- 向下大拇指
-- 比V/和平
-- OK手势
-- 摇滚手势
+| 手势 | 名称 | 对应指令 |
+|------|------|----------|
+| ✊ | 握拳 | 集群降落 |
+| 🖐️ | 张开手掌 | 集群起飞 |
+| ☝️ | 食指指向 | 集群悬停 |
+| 👍 | 竖起大拇指 | 高度上升 |
+| 👎 | 向下大拇指 | 高度下降 |
+| ✌️ | 比 V | 向前飞行 |
+| 👌 | OK 手势 | 指令确认 |
+| 🤟 | 摇滚/ILY | 编队飞行 |
 
-## 配置选项
+### 支持的语音指令
 
-### 跟踪算法
-- highest: 最高精度
-- medium: 平衡模式
-- low: 低延迟模式
+| 指令类别 | 关键词示例 |
+|----------|------------|
+| 起飞 | "起飞", "升空", "takeoff" |
+| 降落 | "降落", "着陆", "land" |
+| 悬停 | "悬停", "停住", "hover" |
+| 上升 | "上升", "高一点", "go up" |
+| 下降 | "下降", "低一点", "go down" |
+| 前进 | "向前飞", "forward" |
+| 编队 | "三角编队", "圆形编队", "方形编队" |
 
-### 阈值设置
-- **融合阈值**: 多模态融合的置信度阈值 (默认 0.50)
-- **召回阈值**: 检测结果筛选的置信度阈值 (默认 0.50)
+### 支持的触屏形状
 
-## 依赖说明
+| 形状 | 对应编队 |
+|------|----------|
+| △ 三角形 | 三角编队 |
+| □ 正方形 | 方形编队 |
+| ○ 圆形 | 圆形编队 |
+| ☆ 五角星 | 星形编队 |
+| — 直线 | 直线编队 |
 
-| 依赖 | 用途 |
-|------|------|
-| PySide6 | GUI 框架 |
-| opencv-python | 图像处理 |
-| openai-whisper | 语音识别 |
-| mediapipe | 手势识别 |
-| ultralytics | YOLOv8 物体检测 |
-| sounddevice | 音频录制 |
-| pytorch + CUDA | GPU 加速 |
+## API 文档
 
-## 注意事项
+### 检测器基类
 
-1. 首次运行会自动下载 Whisper 和 YOLOv8 模型，请确保网络通畅
-2. 语音识别需要麦克风权限
-3. 摄像头需要正确连接并授权
-4. GPU 加速需要正确安装 CUDA 驱动
+```python
+from detectors.base_detector import BaseDetector, DetectionResult
 
-## License
+class CustomDetector(BaseDetector):
+    def initialize(self) -> bool:
+        """初始化检测器"""
+        pass
 
-MIT License
+    def detect(self, data: Any) -> Optional[DetectionResult]:
+        """执行检测"""
+        pass
+
+    def cleanup(self):
+        """清理资源"""
+        pass
+```
+
+### 检测结果
+
+```python
+@dataclass
+class DetectionResult:
+    modal_type: str      # 模态类型
+    command: str         # 检测到的命令
+    confidence: float    # 置信度 (0-1)
+    timestamp: datetime  # 时间戳
+    raw_data: Any        # 原始数据
+    metadata: Dict       # 元数据
+```
+
+### 配置管理器
+
+```python
+from config import config
+
+# 读取配置
+model_name = config.get("voice.model_name", "small")
+
+# 嵌套配置
+log_level = config.get("logging.level", "INFO")
+```
+
+### 日志系统
+
+```python
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+logger.info("信息日志")
+logger.debug("调试日志")
+logger.error("错误日志", exc_info=True)
+```
+
+## 开发指南
+
+### 环境设置
+
+```bash
+# 安装开发依赖
+pip install -e ".[dev]"
+
+# 运行测试
+pytest
+
+# 运行测试 (带覆盖率)
+pytest --cov=. --cov-report=html
+
+# 代码格式化
+black .
+isort .
+
+# 类型检查
+mypy .
+
+# 代码检查
+flake8
+```
+
+### 添加新检测器
+
+1. 创建检测器类，继承 `BaseDetector`
+2. 实现 `initialize()`, `detect()`, `cleanup()` 方法
+3. 在 `main_window.py` 中注册检测器
+4. 添加对应的配置项到 `default.yaml`
+
+### 项目规范
+
+- 代码风格: Black (88 字符行宽)
+- 导入排序: isort
+- 类型注解: 必须
+- 文档字符串: Google 风格
+- 测试: pytest
+
+## 常见问题
+
+### Q: 摄像头无法启动
+
+```bash
+# 检查摄像头设备
+ls /dev/video*
+
+# 测试摄像头
+python -c "import cv2; cap=cv2.VideoCapture(0); print(cap.isOpened())"
+
+# 可能需要安装 v4l-utils
+sudo apt install v4l-utils
+v4l2-ctl --list-devices
+```
+
+### Q: Whisper 模型下载失败
+
+```yaml
+# 配置代理 (config/config.yaml)
+proxy:
+  enabled: true
+  http: "http://127.0.0.1:7890"
+  https: "http://127.0.0.1:7890"
+```
+
+### Q: GPU 加速不工作
+
+```bash
+# 检查 CUDA
+nvidia-smi
+python -c "import torch; print(torch.cuda.is_available())"
+
+# 重新安装 PyTorch CUDA 版本
+pip uninstall torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+```
+
+### Q: 麦克风设备选择
+
+```python
+# 列出可用设备
+import sounddevice as sd
+print(sd.query_devices())
+```
+
+```yaml
+# 配置指定设备 (config/config.yaml)
+voice:
+  audio_device: 7  # 设备 ID
+```
+
+### Q: ROS 连接失败
+
+```bash
+# 确保 ROS Master 运行
+roscore
+
+# 检查环境变量
+echo $ROS_MASTER_URI
+
+# 在新终端中
+source /opt/ros/noetic/setup.bash
+source catkin_ws/devel/setup.bash
+python main.py
+```
+
+## 更新日志
+
+### v2.14.0 (2025-01-08)
+
+- ✨ 新增 YAML 配置系统 (`config/`)
+- ✨ 新增统一日志模块 (`utils/logger`)
+- ✨ 新增测试框架 (`tests/`)
+- ♻️ 重构检测器，支持配置化参数
+- 🐛 修复裸异常捕获问题
+- 📝 添加类型注解
+
+### v2.13.0 (2024-12-18)
+
+- ✨ 新增 3D 无人机集群可视化
+- ✨ 新增 ROS Bridge 集成
+- ✨ 新增 USB 麦克风支持
+- ✨ 新增语音可视化叠加层
+- ✨ 新增 APF 避障算法
+
+### v1.1.0 (2024-12-16)
+
+- 🎉 初始版本发布
+- ✨ 四模态检测器实现
+- ✨ 基础 UI 框架
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源许可证。
+
+## 致谢
+
+- [OpenAI Whisper](https://github.com/openai/whisper) - 语音识别
+- [MediaPipe](https://mediapipe.dev/) - 手势识别
+- [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) - 物体检测
+- [PySide6](https://doc.qt.io/qtforpython/) - GUI 框架
+- [PyQtGraph](https://www.pyqtgraph.org/) - 3D 可视化
+- [ego-planner-swarm](https://github.com/ZJU-FAST-Lab/ego-planner-swarm) - 参考项目
+
+---
+
+<p align="center">
+  Made with ❤️ for Human-Robot Interaction Research
+</p>
