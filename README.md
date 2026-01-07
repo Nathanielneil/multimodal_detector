@@ -64,13 +64,13 @@
 
 ```mermaid
 graph TB
-    subgraph UI["🖥️ Main Window (PySide6)"]
+    subgraph UI["Main Window - PySide6"]
         subgraph Left["控制面板"]
             CP[Control Panel]
-            CB1["☑ 语音识别"]
-            CB2["☑ 手势识别"]
-            CB3["☑ 图像识别"]
-            CB4["☑ 触屏检测"]
+            CB1["语音识别"]
+            CB2["手势识别"]
+            CB3["图像识别"]
+            CB4["触屏检测"]
         end
         subgraph Center["视频显示"]
             VW[Video Widget]
@@ -84,7 +84,7 @@ graph TB
         end
     end
 
-    subgraph Backend["⚙️ 后端模块"]
+    subgraph Backend["后端模块"]
         subgraph Workers["Workers"]
             CW[CameraWorker]
             GW[GestureWorker]
@@ -96,9 +96,9 @@ graph TB
             TD[TouchDetector]
         end
         subgraph ROS["ROS Bridge"]
-            RC[/swarm/command]
-            RS[/swarm/status]
-            RF[/swarm/formation]
+            RC["swarm/command"]
+            RS["swarm/status"]
+            RF["swarm/formation"]
         end
     end
 
@@ -337,46 +337,16 @@ logging:
 
 ### 界面布局
 
-```mermaid
-block-beta
-    columns 3
+应用采用三栏布局设计：
 
-    block:header:3
-        Menu["文件 | 设置 | 帮助"]
-    end
+| 区域 | 功能 | 主要组件 |
+|------|------|----------|
+| **左栏 - 控制面板** | 模态开关与参数控制 | 启动摄像头、模态复选框、录音按钮、阈值滑块 |
+| **中栏 - 视频显示** | 实时画面与检测叠加 | 摄像头画面、手势轨迹、物体框选、语音波形 |
+| **右栏 - 3D 视图** | 无人机集群可视化 | OpenGL 场景、6架无人机、编队控制按钮 |
+| **底部 - 历史记录** | 检测结果时间线 | 时间、模态、命令、置信度 |
 
-    block:left:1
-        space
-        ControlPanel["🎛️ 控制面板"]
-        StartBtn["[启动摄像头]"]
-        Voice["☑ 语音识别"]
-        Gesture["☑ 手势识别"]
-        Image["☑ 图像识别"]
-        Touch["☑ 触屏检测"]
-        RecordBtn["[🎤 录音]"]
-        space
-    end
-
-    block:center:1
-        space
-        VideoTitle["📹 视频画面"]
-        VideoArea["实时摄像头画面\n+ 检测叠加层"]
-        VoiceOverlay["语音可视化叠加层"]
-        space
-    end
-
-    block:right:1
-        space
-        SwarmTitle["🚁 3D 集群视图"]
-        SwarmArea["OpenGL 3D 场景\n6架无人机编队"]
-        Controls["[起飞] [降落] [悬停]"]
-        space
-    end
-
-    block:bottom:3
-        History["📊 检测历史记录"]
-    end
-```
+**检测历史示例：**
 
 | 时间 | 模态 | 命令 | 置信度 |
 |------|------|------|--------|
