@@ -62,28 +62,73 @@
 
 ## 系统架构
 
+```mermaid
+graph TB
+    subgraph UI["🖥️ Main Window (PySide6)"]
+        subgraph Left["控制面板"]
+            CP[Control Panel]
+            CB1["☑ 语音识别"]
+            CB2["☑ 手势识别"]
+            CB3["☑ 图像识别"]
+            CB4["☑ 触屏检测"]
+        end
+        subgraph Center["视频显示"]
+            VW[Video Widget]
+            VO[Voice Overlay]
+            CF[Camera Feed]
+        end
+        subgraph Right["3D 集群视图"]
+            SV[Swarm View 3D]
+            OGL[OpenGL Scene]
+            DR[6x Drones]
+        end
+    end
+
+    subgraph Backend["⚙️ 后端模块"]
+        subgraph Workers["Workers"]
+            CW[CameraWorker]
+            GW[GestureWorker]
+        end
+        subgraph Detectors["Detectors"]
+            VD[VoiceDetector]
+            GD[GestureDetector]
+            ID[ImageDetector]
+            TD[TouchDetector]
+        end
+        subgraph ROS["ROS Bridge"]
+            RC[/swarm/command]
+            RS[/swarm/status]
+            RF[/swarm/formation]
+        end
+    end
+
+    CP --> Workers
+    VW --> Detectors
+    SV --> ROS
+    CW --> CF
+    Detectors --> VW
+    ROS --> SV
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Main Window (PySide6)                     │
-├──────────────┬──────────────────────────┬───────────────────────┤
-│ Control Panel│      Video Display       │   3D Swarm View       │
-│   (左栏)      │        (中栏)             │     (右栏)            │
-│              │  ┌──────────────────┐    │  ┌─────────────────┐  │
-│ □ 语音识别    │  │   Camera Feed    │    │  │  OpenGL Scene   │  │
-│ □ 手势识别    │  │  + Overlays      │    │  │  6x Drones      │  │
-│ □ 图像识别    │  └──────────────────┘    │  │  + Obstacles    │  │
-│ □ 触屏检测    │                          │  └─────────────────┘  │
-│              │  Voice Overlay           │                       │
-└──────────────┴──────────────────────────┴───────────────────────┘
-        │                  │                        │
-        ▼                  ▼                        ▼
-┌──────────────┐  ┌────────────────┐      ┌────────────────┐
-│   Workers    │  │   Detectors    │      │   ROS Bridge   │
-│ CameraWorker │  │ VoiceDetector  │      │  /swarm/cmd    │
-│ GestureWorker│  │ GestureDetector│      │  /swarm/state  │
-└──────────────┘  │ ImageDetector  │      └────────────────┘
-                  │ TouchDetector  │
-                  └────────────────┘
+
+### 数据流程
+
+```mermaid
+flowchart LR
+    A[📷 摄像头] --> B[CameraWorker]
+    B --> C{帧分发}
+    C --> D[🖐️ 手势检测]
+    C --> E[📷 图像检测]
+    C --> F[👆 触屏检测]
+    G[🎤 麦克风] --> H[语音检测]
+
+    D --> I[检测结果]
+    E --> I
+    F --> I
+    H --> I
+
+    I --> J[历史记录]
+    I --> K[3D 可视化]
+    I --> L[ROS 发布]
 ```
 
 ## 系统要求
@@ -194,63 +239,42 @@ python main.py --debug
 
 ## 项目结构
 
+```mermaid
+graph LR
+    subgraph Root["📁 multimodal_detector/"]
+        main["main.py"]
+        pyproject["pyproject.toml"]
+        env["environment.yml"]
+    end
+
+    subgraph Modules["核心模块"]
+        config["📁 config/"]
+        detectors["📁 detectors/"]
+        ui["📁 ui/"]
+        workers["📁 workers/"]
+        ros["📁 ros_bridge/"]
+        utils["📁 utils/"]
+    end
+
+    subgraph Testing["测试 & ROS"]
+        tests["📁 tests/"]
+        catkin["📁 catkin_ws/"]
+    end
+
+    Root --> Modules
+    Root --> Testing
 ```
-multimodal_detector/
-├── main.py                     # 应用入口
-├── pyproject.toml              # 项目配置 (PEP 621)
-├── environment.yml             # Conda 环境配置
-├── pytest.ini                  # pytest 配置
-├── README.md                   # 项目文档
-│
-├── config/                     # 配置模块
-│   ├── __init__.py
-│   ├── config.py               # 配置管理器
-│   └── default.yaml            # 默认配置
-│
-├── detectors/                  # 检测器模块
-│   ├── __init__.py
-│   ├── base_detector.py        # 检测器基类
-│   ├── voice_detector.py       # 语音识别 (Whisper)
-│   ├── gesture_detector.py     # 手势识别 (MediaPipe)
-│   ├── image_detector.py       # 图像识别 (YOLOv8)
-│   └── touch_detector.py       # 触屏指令检测
-│
-├── ui/                         # UI 组件
-│   ├── __init__.py
-│   ├── main_window.py          # 主窗口
-│   ├── control_panel.py        # 控制面板
-│   ├── video_widget.py         # 视频显示
-│   ├── voice_overlay.py        # 语音可视化叠加层
-│   ├── swarm_view_3d.py        # 3D 集群可视化
-│   ├── rviz_widget.py          # RViz 嵌入组件
-│   ├── history_table.py        # 历史记录表格
-│   ├── progress_dialog.py      # 进度对话框
-│   └── styles.py               # QSS 样式表
-│
-├── workers/                    # 后台工作线程
-│   ├── __init__.py
-│   ├── camera_worker.py        # 摄像头采集
-│   └── gesture_worker.py       # 手势处理
-│
-├── ros_bridge/                 # ROS 桥接模块
-│   ├── __init__.py
-│   └── ros_bridge.py           # ROS 通信
-│
-├── utils/                      # 工具模块
-│   ├── __init__.py
-│   └── logger.py               # 日志管理
-│
-├── tests/                      # 测试用例
-│   ├── __init__.py
-│   ├── conftest.py             # pytest fixtures
-│   ├── test_config.py          # 配置测试
-│   ├── test_detectors.py       # 检测器测试
-│   └── test_logger.py          # 日志测试
-│
-└── catkin_ws/                  # ROS 工作空间
-    └── src/
-        └── swarm_visualizer/   # ROS 可视化节点
-```
+
+| 目录 | 说明 | 主要文件 |
+|------|------|----------|
+| `config/` | 配置模块 | `config.py`, `default.yaml` |
+| `detectors/` | 检测器模块 | `voice_detector.py`, `gesture_detector.py`, `image_detector.py`, `touch_detector.py` |
+| `ui/` | UI 组件 | `main_window.py`, `video_widget.py`, `swarm_view_3d.py` |
+| `workers/` | 后台线程 | `camera_worker.py`, `gesture_worker.py` |
+| `ros_bridge/` | ROS 桥接 | `ros_bridge.py` |
+| `utils/` | 工具模块 | `logger.py` |
+| `tests/` | 测试用例 | `test_config.py`, `test_detectors.py` |
+| `catkin_ws/` | ROS 工作空间 | `swarm_visualizer/` |
 
 ## 配置说明
 
@@ -313,32 +337,52 @@ logging:
 
 ### 界面布局
 
+```mermaid
+block-beta
+    columns 3
+
+    block:header:3
+        Menu["文件 | 设置 | 帮助"]
+    end
+
+    block:left:1
+        space
+        ControlPanel["🎛️ 控制面板"]
+        StartBtn["[启动摄像头]"]
+        Voice["☑ 语音识别"]
+        Gesture["☑ 手势识别"]
+        Image["☑ 图像识别"]
+        Touch["☑ 触屏检测"]
+        RecordBtn["[🎤 录音]"]
+        space
+    end
+
+    block:center:1
+        space
+        VideoTitle["📹 视频画面"]
+        VideoArea["实时摄像头画面\n+ 检测叠加层"]
+        VoiceOverlay["语音可视化叠加层"]
+        space
+    end
+
+    block:right:1
+        space
+        SwarmTitle["🚁 3D 集群视图"]
+        SwarmArea["OpenGL 3D 场景\n6架无人机编队"]
+        Controls["[起飞] [降落] [悬停]"]
+        space
+    end
+
+    block:bottom:3
+        History["📊 检测历史记录"]
+    end
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  文件  设置  帮助                              [_][□][X]    │
-├────────────┬────────────────────────┬───────────────────────┤
-│            │                        │                       │
-│  控制面板   │      视频画面          │    3D 集群视图         │
-│            │                        │                       │
-│ [启动摄像头] │  ┌──────────────────┐  │  ┌─────────────────┐  │
-│            │  │                  │  │  │    ▲            │  │
-│ ☑ 语音识别  │  │   实时摄像头画面   │  │  │   ●●●          │  │
-│ ☑ 手势识别  │  │   + 检测叠加层    │  │  │  ●   ●         │  │
-│ ☑ 图像识别  │  │                  │  │  │    ●           │  │
-│ ☑ 触屏检测  │  └──────────────────┘  │  └─────────────────┘  │
-│            │                        │                       │
-│ [🎤 录音]   │  语音可视化叠加层       │  [起飞] [降落] [悬停]  │
-│            │                        │                       │
-├────────────┴────────────────────────┴───────────────────────┤
-│  检测历史记录                                                │
-│  ┌───────┬────────┬──────────┬────────┐                    │
-│  │ 时间   │ 模态   │ 命令     │ 置信度  │                    │
-│  ├───────┼────────┼──────────┼────────┤                    │
-│  │ 12:30 │ 手势   │ 起飞     │ 0.95   │                    │
-│  │ 12:31 │ 语音   │ 三角编队  │ 0.88   │                    │
-│  └───────┴────────┴──────────┴────────┘                    │
-└─────────────────────────────────────────────────────────────┘
-```
+
+| 时间 | 模态 | 命令 | 置信度 |
+|------|------|------|--------|
+| 12:30:15 | 🖐️ 手势 | 起飞 | 0.95 |
+| 12:31:02 | 🎤 语音 | 三角编队 | 0.88 |
+| 12:32:45 | 👆 触屏 | 圆形编队 | 0.92 |
 
 ### 基本操作流程
 
