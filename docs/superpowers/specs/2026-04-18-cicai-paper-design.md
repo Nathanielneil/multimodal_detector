@@ -75,10 +75,10 @@
 $$w_m^t = \alpha \cdot \hat{r}_m^t + (1-\alpha) \cdot f(\text{env}_m^t, \text{stab}_m^t)$$
 
 - $\hat{r}_m^t$：跨模态一致性代理信号，采用**加权移动平均 (WMA)** 替代简单滑动窗口，当前帧权重最高，向过去指数衰减（衰减系数 $\lambda$ 在验证集上搜索）。论文中明确报告各检测器帧率（Whisper ~2Hz，MediaPipe ~30Hz）及 WMA 引入的理论延迟上界（ms），证明在 HSI 允许的实时范围内。
-- $f(\text{env}_m^t, \text{stab}_m^t)$：联合环境与时序稳定性评分：
-  - 语音：RMS 背景噪声估计
-  - 手势：帧亮度均值
-  - 触屏：轨迹点数归一化
+- $f(\text{env}_m^t, \text{stab}_m^t)$：联合环境与时序稳定性评分，环境特征通过**非线性 Sigmoid 映射**转换为可靠性分数（通过小规模校准实验拟合，使权重在进入"识别红区"时迅速切断该模态）：
+  - 语音：$\sigma(-k_v \cdot (\text{RMS} - \tau_v))$，$k_v, \tau_v$ 从校准实验拟合
+  - 手势：$\sigma(-k_g \cdot (\tau_g - \text{亮度均值}))$，低光照时迅速降权
+  - 触屏：轨迹点数归一化（线性，触屏对环境不敏感）
   - **时序稳定性惩罚**（所有模态共用）：若某模态在最近 5 帧内输出类别发生跳变，惩罚强度由**语义相似度矩阵** $S_{IJ}$ 决定：语义相反的跳变（LAND→TAKEOFF）重罚，语义无关的跳变（MOVE_FWD→FORMATION）中罚，合法快速重复（ALT_UP→ALT_UP）不惩罚。$S_{IJ}$ 从指令本体的语义关系预定义。
 - $\alpha$：超参数，在验证集上搜索
 
@@ -88,7 +88,11 @@ $$w_m^t = \alpha \cdot \hat{r}_m^t + (1-\alpha) \cdot f(\text{env}_m^t, \text{st
 
 $$\tilde{w}_m = \frac{w_m}{\sum_{m'} w_{m'}}$$
 
-相关性修正：将静态矩阵升级为**指令条件相关性** $\rho_{mn}(I) \in [0,1]$，从训练数据中按指令类别分别估计（如 FORMATION 指令下手势+触屏高度相关，TAKEOFF 下两者无关）：
+相关性修正：将静态矩阵升级为**指令条件相关性** $\rho_{mn}(I) \in [0,1]$，从训练数据中按指令类别分别估计。**稀疏性处理**：对样本量不足的低频指令（如 ALT_DOWN），以全局平均相关性 $\bar{\rho}_{mn}$ 作为层级先验初始值，并将语义相近指令（ALT_UP / ALT_DOWN）的相关性矩阵加权融合，缓解稀疏估计问题：
+
+$$\rho_{mn}(I) = \frac{N_I \cdot \hat{\rho}_{mn}(I) + N_0 \cdot \bar{\rho}_{mn}}{N_I + N_0}$$
+
+其中 $N_I$ 为指令 $I$ 的训练样本数，$N_0$ 为平滑超参数。
 
 $$\tilde{w}_m^{\text{eff}}(I) = \tilde{w}_m \cdot \left(1 - \max_{n \neq m} \rho_{mn}(I) \cdot \tilde{w}_n\right)$$
 
@@ -96,8 +100,10 @@ $$\tilde{w}_m^{\text{eff}}(I) = \tilde{w}_m \cdot \left(1 - \max_{n \neq m} \rho
 
 $$P(I \mid o_v, o_g, o_s, \mathbf{s}) \propto P(I \mid \mathbf{s})^{\beta(\mathbf{s})} \cdot \prod_{m \in \{v,g,s\}} P(I \mid o_m)^{\tilde{w}_m^{\text{eff}}(I)}$$
 
+**归一化注意**：由于 $\tilde{w}_m^{\text{eff}}(I)$ 对不同 $I$ 取值不同，归一化（Softmax）前必须对所有 $I \in \mathcal{C}$ 完整计算各自的 $\rho_{mn}(I)$，再统一归一化，否则概率分布失去物理意义。
+
 - $P(I \mid \mathbf{s})$：**学习得到的集群状态条件先验**，用轻量 MLP（2层，隐层 32 维）从 AirSim 飞行日志中学习 $P(I_t \mid I_{t-1}, \mathbf{s}_t)$。训练数据来源多样化：人工遥控轨迹 + 最优控制（A*）轨迹 + 随机扰动轨迹，避免 MLP 仅学习单一控制策略的近似。论文中强调 MLP 捕捉的是集群物理状态（编队连通度、电量非线性变化）与意图之间的复杂非线性关系，这是硬编码规则难以覆盖的。
-- $\beta(\mathbf{s})$：**动态先验强度**，与集群风险等级挂钩：平稳飞行时 $\beta$ 小（尊重人意图），低电量/紧急避障时 $\beta$ 大（强制干预）。**Safety Break 机制**：若任意模态置信度 $c_m > 0.95$ 且其推断指令与先验最高概率指令完全相反，则强制将 $\beta$ 降至 $\beta_{\min}$，触发"紧急人工接管"，保障 Human-in-the-loop 安全性。
+- $\beta(\mathbf{s})$：**动态先验强度**，与集群风险等级挂钩：平稳飞行时 $\beta$ 小（尊重人意图），低电量/紧急避障时 $\beta$ 大（强制干预）。**Safety Break 机制（带迟滞）**：进入条件为某模态置信度 $c_m > 0.95$ 且推断指令与先验最高概率指令完全相反，且该冲突持续 $K \geq 3$ 帧；退出条件为 $c_m < 0.85$（迟滞比较器防止高频抖动/Chattering）。触发后强制将 $\beta$ 降至 $\beta_{\min}$，触发"紧急人工接管"，保障 Human-in-the-loop 安全性。
 - 每个专家 $P(I \mid o_m)$ 由校准后的置信度参数化（softmax over 指令类别）
 
 **Layer 3 — Decision Gate**
@@ -201,7 +207,8 @@ $$\text{param}^* = \arg\max_{p} \sum_{m: o_m \text{ 含参数}} \tilde{w}_m^{\te
 - 集群规模：6架无人机
 - 通信延迟测试：人工注入 50ms / 100ms / 200ms 随机延迟
 - **AirSim 环境-性能关联实验**：调整光照（正常→低光）和风力（0→5m/s），记录 Layer 1 权重 $w_g$（手势）的动态下降过程，展示决策权自动转移至语音模态的行为
-- **确认闭环仿真**：在 AirSim 中完整模拟"系统请求确认 → 用户 OK 手势 → 系统执行"流程，统计额外延迟对集群避障任务完成率的影响
+- **AirSim 感知延迟注入**：除通信延迟外，注入感知延迟（模拟无人机高速运动导致图像传输模糊，反馈给检测器的置信度下降），测试系统在感知退化下的鲁棒性
+- **确认闭环仿真**：在 AirSim 中完整模拟"系统请求确认 → 用户 OK 手势 → 系统执行"流程，以 Communication Efficiency（成功执行数/总交互轮次）作为用户负荷的代理指标
 - **可视化输出**：置信度-权重动态演化图（三路信号随环境噪声波动的时序图），作为论文核心图表
 - 硬件：Ubuntu 20.04，CPU 实验（GPU 可选加速 Whisper）
 
