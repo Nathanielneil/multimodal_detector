@@ -74,7 +74,7 @@
 
 $$w_m^t = \alpha \cdot \hat{r}_m^t + (1-\alpha) \cdot f(\text{env}_m^t, \text{stab}_m^t)$$
 
-- $\hat{r}_m^t$：跨模态一致性代理信号，采用**加权移动平均 (WMA)** 替代简单滑动窗口，当前帧权重最高，向过去指数衰减（衰减系数 $\lambda$ 在验证集上搜索）。论文中明确报告各检测器帧率（Whisper ~2Hz，MediaPipe ~30Hz）及 WMA 引入的理论延迟上界（ms），证明在 HSI 允许的实时范围内。
+- $\hat{r}_m^t$：跨模态一致性代理信号，采用**异步 WMA**：不同模态使用独立衰减系数 $\lambda_m$（语音 $\lambda_v$ 小，记忆更长；手势 $\lambda_g$ 大，强调瞬时变化），在验证集上分别搜索。**语义广播**：语音结果在产生后广播到后续手势帧，直到下一条语音结果产生，避免语音因低帧率被误判为"不可靠"。论文中明确报告各检测器帧率（Whisper ~2Hz，MediaPipe ~30Hz）及 WMA 引入的理论延迟上界（ms）。
 - $f(\text{env}_m^t, \text{stab}_m^t)$：联合环境与时序稳定性评分，环境特征通过**非线性 Sigmoid 映射**转换为可靠性分数（通过小规模校准实验拟合，使权重在进入"识别红区"时迅速切断该模态）：
   - 语音：$\sigma(-k_v \cdot (\text{RMS} - \tau_v))$，$k_v, \tau_v$ 从校准实验拟合
   - 手势：$\sigma(-k_g \cdot (\tau_g - \text{亮度均值}))$，低光照时迅速降权
@@ -102,13 +102,13 @@ $$P(I \mid o_v, o_g, o_s, \mathbf{s}) = \frac{1}{Z} P(I \mid \mathbf{s})^{\beta(
 
 其中 $Z = \sum_{I' \in \mathcal{C}} P(I' \mid \mathbf{s})^{\beta(\mathbf{s})} \cdot \prod_m P(I' \mid o_m)^{\tilde{w}_m^{\text{eff}}(I')}$，显式写出归一化常数以体现对 PoE 变体数学严谨性的清晰认知。
 
-- $P(I \mid \mathbf{s})$：**学习得到的集群状态条件先验**，用轻量 MLP（2层，隐层 32 维）从 AirSim 飞行日志中学习 $P(I_t \mid I_{t-1}, \mathbf{s}_t)$。训练数据来源多样化：人工遥控轨迹 + 最优控制（A*）轨迹 + 随机扰动轨迹，避免 MLP 仅学习单一控制策略的近似。论文中强调 MLP 捕捉的是集群物理状态（编队连通度、电量非线性变化）与意图之间的复杂非线性关系，这是硬编码规则难以覆盖的。
+- $P(I \mid \mathbf{s})$：**学习得到的集群状态条件先验**，用轻量 MLP（2层，隐层 32 维）从 AirSim 飞行日志中学习 $P(I_t \mid I_{t-1}, \mathbf{s}_t)$。训练数据来源多样化：人工遥控轨迹 + 最优控制（A*）轨迹 + 随机扰动轨迹 + **任务失败轨迹**（低电量强制降落、避障失败），避免 MLP 仅学习单一控制策略的近似。**输入增强**：$\mathbf{s}_t$ 除绝对值外还包含变化率（$\Delta\text{Battery}$、$\Delta\text{连通度}$），更能捕捉"任务失败趋势"。**可解释性验证**：在实验部分展示典型场景（如电量 < 10% 且高度 > 5m）下 MLP 输出的 LAND 先验概率显著高于其他指令，证明先验的逻辑合理性。
 - $\beta(\mathbf{s})$：**动态先验强度**，与集群风险等级挂钩：平稳飞行时 $\beta$ 小（尊重人意图），低电量/紧急避障时 $\beta$ 大（强制干预）。**Safety Break 机制（带迟滞）**：进入条件为某模态置信度 $c_m > 0.95$ 且推断指令与先验最高概率指令完全相反，且该冲突持续 $K \geq 3$ 帧；退出条件为 $c_m < 0.85$（迟滞比较器防止高频抖动/Chattering）。触发后强制将 $\beta$ 降至 $\beta_{\min}$，触发"紧急人工接管"，并在 `multimodal_detector` 界面给予高亮提示（HCI 反馈）。AirSim 实验中记录用户在 Safety Break 触发后的反应时长，作为系统易用性的补充评价。
 - 每个专家 $P(I \mid o_m)$ 由校准后的置信度参数化（softmax over 指令类别）
 
 **Layer 3 — Decision Gate**
 
-阈值 $\theta_{\text{high}}, \theta_{\text{low}}$ 通过 **False Trigger Rate vs. TCT 的 Pareto 曲线** 在验证集上选取，而非单纯最大化 F1。具体做法：在验证集上扫描 $(\theta_{\text{high}}, \theta_{\text{low}})$ 的网格，绘制 False Trigger Rate（安全性）与 TCT（交互效率）的权衡曲线，选取 Pareto 前沿上满足 False Trigger Rate $< \epsilon$ 约束的最小 TCT 点。$\epsilon$ 由任务安全需求决定（论文中设 $\epsilon = 0.05$）。
+阈值 $\theta_{\text{high}}, \theta_{\text{low}}$ 通过 **False Trigger Rate vs. TCT 的 Pareto 曲线** 在验证集上选取。**防过拟合**：在 LOOCV 的 5 个验证折上分别选取 Pareto 最优点，计算阈值的方差；若方差超过预设上限，说明模型对阈值敏感，改用 5 折中值作为保守固定阈值，并在论文中报告方差以示透明。
 
 $$\text{action} = \begin{cases} \text{执行} I^* & \text{if } P(I^* \mid \cdot) > \theta_{\text{high}} \\ \text{请求确认} & \text{if } \theta_{\text{low}} < P(I^* \mid \cdot) \leq \theta_{\text{high}} \\ \text{拒绝，提示重输} & \text{if } P(I^* \mid \cdot) \leq \theta_{\text{low}} \end{cases}$$
 
@@ -119,7 +119,7 @@ $$\text{action} = \begin{cases} \text{执行} I^* & \text{if } P(I^* \mid \cdot)
 $$\text{param}^* = \arg\max_{p} \sum_{m: o_m \text{ 含参数}} \tilde{w}_m^{\text{eff}}(I^*) \cdot \mathbf{1}[o_m.\text{param} = p]$$
 
 - 若仅一个模态提供参数（如只有触屏划出三角形），直接采用该参数
-- 若多模态参数冲突（如触屏三角形 vs 语音圆形），按 $\tilde{w}_m^{\text{eff}}$ 加权投票，票数相同时触发 Layer 3 请求确认
+- 若多模态参数冲突（如触屏三角形 vs 语音圆形），按 $\tilde{w}_m^{\text{eff}}$ 加权投票；若最高票与次高票差距 $< \delta_{\text{param}}$（**Parameter Uncertainty 阈值**），强制降级到 Layer 3 请求确认，而非直接执行，提升交互透明度
 - 指令空间 $\mathcal{C}$ 正式定义为 $\{\text{Action} \times \text{Parameter}\}$，其中 Parameter 对非 FORMATION 指令为空
 
 ---
@@ -172,6 +172,7 @@ $$\text{param}^* = \arg\max_{p} \sum_{m: o_m \text{ 含参数}} \tilde{w}_m^{\te
 - **Rejection F1**：在人工标注的模糊样本集上，拒绝类别的 F1
 - **Task Completion Time (TCT)**：从用户发出意图到集群完成响应的端到端时间，含"请求确认"交互的额外延迟
 - **Communication Efficiency**：成功执行指令数 / 总交互轮次（衡量确认机制的代价）
+- **Re-entry Rate**：同一指令在被拒绝后用户重复输入的次数（代理用户信任度；值高说明 Layer 3 过于严苛，伤害用户体验）
 - **Latency**：推断模块端到端延迟（ms），不含 AirSim 仿真执行时间
 
 ### 4.4 消融实验
