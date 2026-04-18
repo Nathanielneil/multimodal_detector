@@ -26,16 +26,44 @@
 
 ## 3. 方法设计
 
+### 3.0 统一指令本体（Command Ontology）
+
+三路模态的原始输出需先映射到统一指令空间 $\mathcal{C}$，再进行融合：
+
+| 统一指令 $I$ | 语音关键词 | 手势 | 触屏形状 |
+|-------------|-----------|------|---------|
+| TAKEOFF | 起飞/升空 | 张开手掌 | — |
+| LAND | 降落/着陆 | 握拳 | — |
+| HOVER | 悬停/停住 | 食指指向 | — |
+| ALT_UP | 上升/高一点 | 竖起大拇指 | — |
+| ALT_DOWN | 下降/低一点 | 向下大拇指 | — |
+| MOVE_FWD | 向前飞/forward | V形手势 | — |
+| FORMATION | 编队（+类型） | ILY手势 | 三角/方形/圆形/五角星 |
+| CONFIRM | 确认/好的 | OK手势 | — |
+
+- 触屏形状（三角/方形/圆形/五角星）统一映射为 FORMATION，子类型作为附加参数
+- 某模态无对应输出时，该模态置信度设为 0，不参与融合
+
 ### 3.1 问题形式化
 
 每时刻 $t$ 收到三路观测：
-- $o_v^t$：语音识别结果 + 置信度 $c_v \in [0,1]$
-- $o_g^t$：手势识别结果 + 置信度 $c_g \in [0,1]$
-- $o_s^t$：触屏形状识别结果 + 置信度 $c_s \in [0,1]$
+- $o_v^t$：语音识别结果，置信度 $c_v \in [0,1]$（经校准，见 3.1.1）
+- $o_g^t$：手势识别结果，置信度 $c_g \in [0,1]$（经校准）
+- $o_s^t$：触屏形状识别结果，置信度 $c_s \in [0,1]$（经校准）
 
 目标：推断 $I^* = \arg\max_{I \in \mathcal{C}} P(I \mid o_v, o_g, o_s, \text{history})$
 
-指令集合 $\mathcal{C}$：{起飞, 降落, 悬停, 上升, 下降, 前进, 编队, 确认}（8类）
+#### 3.1.1 置信度校准
+
+三路检测器原始输出不可直接比较，需统一校准为概率估计：
+
+| 模态 | 原始输出 | 校准方法 |
+|------|---------|---------|
+| 语音 (Whisper) | `avg_logprob` ∈ (-∞, 0] | Platt scaling: sigmoid(a·logprob + b)，参数从验证集拟合 |
+| 手势 (MediaPipe) | 规则匹配硬编码值 {0.85, 0.9} | 用验证集混淆矩阵估计类条件准确率，替换硬编码值 |
+| 触屏 (OpenCV) | 固定 1.0 | 用形状识别的几何评分（圆度/顶点匹配度）替代固定值 |
+
+校准后的置信度 $c_m \in [0,1]$ 作为似然 $P(o_m \mid I)$ 的参数化估计。
 
 ### 3.2 三层架构
 
@@ -43,20 +71,25 @@
 
 动态评估每个模态的可靠性权重 $w_m \in [0,1]$：
 
-$$w_m^t = \alpha \cdot \text{acc}_m^{\text{recent}} + (1-\alpha) \cdot f(\text{env}_m^t)$$
+$$w_m^t = \alpha \cdot \hat{r}_m^t + (1-\alpha) \cdot f(\text{env}_m^t)$$
 
-- $\text{acc}_m^{\text{recent}}$：最近 N 次该模态的历史准确率（滑动窗口）
-- $f(\text{env}_m^t)$：环境特征函数（语音：背景噪声估计；手势：光照/遮挡估计；触屏：轨迹点数）
-- $\alpha$：平衡历史与实时环境的超参数
+- $\hat{r}_m^t$：在线可靠性估计，用跨模态一致性作为代理信号（当多模态一致时，各模态可靠性上升；冲突时下降）。无需外部 ground truth。
+- $f(\text{env}_m^t)$：环境特征函数（语音：RMS 背景噪声估计；手势：帧亮度均值；触屏：轨迹点数归一化）
+- $\alpha$：超参数，在验证集上搜索
 
-**Layer 2 — Bayesian Intent Inference**
+**Layer 2 — Product-of-Experts Intent Inference**
 
-$$P(I \mid o_v, o_g, o_s) \propto P(o_v \mid I)^{w_v} \cdot P(o_g \mid I)^{w_g} \cdot P(o_s \mid I)^{w_s} \cdot P(I \mid \text{history})$$
+采用 Product-of-Experts (PoE) 框架（Hinton, 2002），各模态作为独立专家：
 
-- 似然 $P(o_m \mid I)$：由各检测器置信度参数化的类条件概率
-- 先验 $P(I \mid \text{history})$：基于最近 $k$ 条指令的一阶马尔可夫转移概率（从训练数据统计）
+$$P(I \mid o_v, o_g, o_s) \propto P(I)^{1-\sum w_m} \cdot \prod_{m \in \{v,g,s\}} P(I \mid o_m)^{w_m}$$
+
+- 每个专家 $P(I \mid o_m)$ 由校准后的置信度参数化（softmax over 指令类别）
+- 先验 $P(I)$ 使用历史指令的一阶马尔可夫转移概率（Laplace 平滑处理稀疏转移）
+- PoE 框架保证归一化，权重指数有明确的信息论解释（加权对数似然求和）
 
 **Layer 3 — Decision Gate**
+
+阈值 $\theta_{\text{high}}, \theta_{\text{low}}$ 在验证集 ROC 曲线上选取，以最大化 F1 为准：
 
 $$\text{action} = \begin{cases} \text{执行} I^* & \text{if } P(I^* \mid \cdot) > \theta_{\text{high}} \\ \text{请求确认} & \text{if } \theta_{\text{low}} < P(I^* \mid \cdot) \leq \theta_{\text{high}} \\ \text{拒绝，提示重输} & \text{if } P(I^* \mid \cdot) \leq \theta_{\text{low}} \end{cases}$$
 
@@ -66,15 +99,22 @@ $$\text{action} = \begin{cases} \text{执行} I^* & \text{if } P(I^* \mid \cdot)
 
 ### 4.1 数据集
 
-基于现有 multimodal_detector 系统采集：
+基于现有 multimodal_detector 系统采集，单人操作员录制：
 
 | 维度 | 设置 |
 |------|------|
-| 指令类别 | 8类 |
-| 模态组合 | 7种（单×3 + 双×3 + 三×1） |
-| 噪声条件 | 正常 / 低光照 / 背景噪声 / 手势遮挡 |
-| 每类样本 | ~50 samples |
-| 总计 | ~1600 条 |
+| 指令类别 | 8类（见 3.0 指令本体） |
+| 模态组合 | 3种（单模态：语音/手势/触屏各自独立测试） |
+| 噪声条件 | 正常 / 低光照（调暗环境灯） / 背景噪声（播放 60dB 白噪声） / 手势遮挡（半遮挡手部） |
+| 每类×每条件样本 | ~30 samples |
+| 总计 | 8类 × 3模态 × 4条件 × 30 = **2880 条** |
+| 标注 | 操作员同步记录真实意图标签；"模糊样本"集（双模态冲突）额外采集 200 条，人工标注"应执行/应拒绝" |
+| 划分 | 70% 训练（含校准）/ 15% 验证（阈值调优）/ 15% 测试 |
+
+**噪声条件复现方式**：
+- 低光照：关闭主灯，仅保留环境光（约 50 lux）
+- 背景噪声：扬声器播放标准化白噪声（60 dB SPL）
+- 手势遮挡：黑色遮挡板覆盖手部约 40% 面积
 
 ### 4.2 Baseline
 
@@ -88,10 +128,10 @@ $$\text{action} = \begin{cases} \text{执行} I^* & \text{if } P(I^* \mid \cdot)
 
 ### 4.3 评估指标
 
-- **Command Accuracy**：正确指令识别率
-- **False Trigger Rate**：误触发率
-- **Rejection Rate**：正确拒绝模糊输入比例
-- **Latency**：端到端响应延迟（ms）
+- **Command Accuracy**：正确指令识别率（测试集，排除拒绝样本）
+- **False Trigger Rate**：低置信度输入被错误执行的比例
+- **Rejection Precision**：被拒绝的样本中，真正"应拒绝"的比例（基于人工标注的模糊样本集）
+- **Latency**：端到端响应延迟（ms），Whisper 使用 `tiny` 模型以满足实时性，实验中报告实际延迟数值而非声称"实时"
 
 ### 4.4 消融实验
 
@@ -117,7 +157,30 @@ $$\text{action} = \begin{cases} \text{执行} I^* & \text{if } P(I^* \mid \cdot)
 
 ## 6. 实验平台
 
-- 系统：multimodal_detector v2.14
+- 系统：multimodal_detector v2.14（仿真环境，无真实无人机）
 - 路径：`/home/ubuntu/NGW/intern/multimodal_detector`
-- 检测器：Whisper (voice) + MediaPipe (gesture) + OpenCV contour (touch)
-- 无人机仿真：PyQtGraph OpenGL 3D + APF 避障 + L1 动力学模型
+- 检测器：Whisper tiny (voice) + MediaPipe (gesture) + OpenCV contour (touch)
+- 无人机仿真：PyQtGraph OpenGL 3D + APF 避障 + L1 动力学模型（纯软件仿真）
+- 硬件：Ubuntu 20.04，CPU 实验（GPU 可选加速 Whisper）
+- 实验范围：所有结果来自仿真平台，不涉及真实无人机飞行
+
+---
+
+## 7. 相关工作方向（待补充文献）
+
+- 多模态融合：早期/晚期/混合融合综述
+- 不确定性量化：Bayesian deep learning, conformal prediction in HRI
+- UAV 人机交互：gesture-based UAV control, voice command for drones
+- Product-of-Experts：Hinton (2002), 后续在多模态学习中的应用
+
+---
+
+## 8. 时间规划
+
+| 周次 | 任务 |
+|------|------|
+| Week 1 (4/18–4/25) | 实现置信度校准 + PoE 融合模块 + 决策门控 |
+| Week 2 (4/26–5/2) | 数据采集（2880 条 + 200 条模糊样本） |
+| Week 3 (5/3–5/9) | 运行实验、消融实验、阈值调优 |
+| Week 4 (5/10–5/18) | 撰写论文（含 Related Work） |
+| Week 5 (5/19–5/25) | 润色、格式检查、提交 |
