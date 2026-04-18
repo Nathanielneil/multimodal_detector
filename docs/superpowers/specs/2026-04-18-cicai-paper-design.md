@@ -74,7 +74,7 @@
 
 $$w_m^t = \alpha \cdot \hat{r}_m^t + (1-\alpha) \cdot f(\text{env}_m^t, \text{stab}_m^t)$$
 
-- $\hat{r}_m^t$：跨模态一致性代理信号（滑动窗口 10 次，归一化到 [0,1]）
+- $\hat{r}_m^t$：跨模态一致性代理信号，采用**加权移动平均 (WMA)** 替代简单滑动窗口，当前帧权重最高，向过去指数衰减（衰减系数 $\lambda$ 在验证集上搜索）。论文中明确报告各检测器帧率（Whisper ~2Hz，MediaPipe ~30Hz）及 WMA 引入的理论延迟上界（ms），证明在 HSI 允许的实时范围内。
 - $f(\text{env}_m^t, \text{stab}_m^t)$：联合环境与时序稳定性评分：
   - 语音：RMS 背景噪声估计
   - 手势：帧亮度均值
@@ -96,19 +96,27 @@ $$\tilde{w}_m^{\text{eff}}(I) = \tilde{w}_m \cdot \left(1 - \max_{n \neq m} \rho
 
 $$P(I \mid o_v, o_g, o_s, \mathbf{s}) \propto P(I \mid \mathbf{s})^{\beta(\mathbf{s})} \cdot \prod_{m \in \{v,g,s\}} P(I \mid o_m)^{\tilde{w}_m^{\text{eff}}(I)}$$
 
-- $P(I \mid \mathbf{s})$：**学习得到的集群状态条件先验**，用轻量 MLP（2层，隐层 32 维）从 AirSim 飞行日志中学习 $P(I_t \mid I_{t-1}, \mathbf{s}_t)$，输入为集群状态向量 $\mathbf{s}$（编队连通度、平均剩余电量、任务阶段），输出为 8 类指令的概率分布
-- $\beta(\mathbf{s})$：**动态先验强度**，与集群风险等级挂钩：平稳飞行时 $\beta$ 小（尊重人意图），低电量/紧急避障时 $\beta$ 大（强制干预）；风险等级由 $\mathbf{s}$ 中的电量和避障状态计算
+- $P(I \mid \mathbf{s})$：**学习得到的集群状态条件先验**，用轻量 MLP（2层，隐层 32 维）从 AirSim 飞行日志中学习 $P(I_t \mid I_{t-1}, \mathbf{s}_t)$。训练数据来源多样化：人工遥控轨迹 + 最优控制（A*）轨迹 + 随机扰动轨迹，避免 MLP 仅学习单一控制策略的近似。论文中强调 MLP 捕捉的是集群物理状态（编队连通度、电量非线性变化）与意图之间的复杂非线性关系，这是硬编码规则难以覆盖的。
+- $\beta(\mathbf{s})$：**动态先验强度**，与集群风险等级挂钩：平稳飞行时 $\beta$ 小（尊重人意图），低电量/紧急避障时 $\beta$ 大（强制干预）。**Safety Break 机制**：若任意模态置信度 $c_m > 0.95$ 且其推断指令与先验最高概率指令完全相反，则强制将 $\beta$ 降至 $\beta_{\min}$，触发"紧急人工接管"，保障 Human-in-the-loop 安全性。
 - 每个专家 $P(I \mid o_m)$ 由校准后的置信度参数化（softmax over 指令类别）
 
 **Layer 3 — Decision Gate**
 
-阈值 $\theta_{\text{high}}, \theta_{\text{low}}$ 在验证集 ROC 曲线上选取，以最大化 F1 为准：
+阈值 $\theta_{\text{high}}, \theta_{\text{low}}$ 通过 **False Trigger Rate vs. TCT 的 Pareto 曲线** 在验证集上选取，而非单纯最大化 F1。具体做法：在验证集上扫描 $(\theta_{\text{high}}, \theta_{\text{low}})$ 的网格，绘制 False Trigger Rate（安全性）与 TCT（交互效率）的权衡曲线，选取 Pareto 前沿上满足 False Trigger Rate $< \epsilon$ 约束的最小 TCT 点。$\epsilon$ 由任务安全需求决定（论文中设 $\epsilon = 0.05$）。
 
 $$\text{action} = \begin{cases} \text{执行} I^* & \text{if } P(I^* \mid \cdot) > \theta_{\text{high}} \\ \text{请求确认} & \text{if } \theta_{\text{low}} < P(I^* \mid \cdot) \leq \theta_{\text{high}} \\ \text{拒绝，提示重输} & \text{if } P(I^* \mid \cdot) \leq \theta_{\text{low}} \end{cases}$$
 
----
+**Layer 2.5 — Parameter Consensus（带参数指令的子参数融合）**
 
-## 4. 实验设计
+对于带子参数的指令（当前仅 FORMATION），在 Layer 2 确定 $I^* = \text{FORMATION}$ 后，对各模态提供的子参数（形状类型）进行加权投票：
+
+$$\text{param}^* = \arg\max_{p} \sum_{m: o_m \text{ 含参数}} \tilde{w}_m^{\text{eff}}(I^*) \cdot \mathbf{1}[o_m.\text{param} = p]$$
+
+- 若仅一个模态提供参数（如只有触屏划出三角形），直接采用该参数
+- 若多模态参数冲突（如触屏三角形 vs 语音圆形），按 $\tilde{w}_m^{\text{eff}}$ 加权投票，票数相同时触发 Layer 3 请求确认
+- 指令空间 $\mathcal{C}$ 正式定义为 $\{\text{Action} \times \text{Parameter}\}$，其中 Parameter 对非 FORMATION 指令为空
+
+---
 
 ### 4.1 数据集
 
@@ -124,17 +132,19 @@ $$\text{action} = \begin{cases} \text{执行} I^* & \text{if } P(I^* \mid \cdot)
 | 实际采集总量 | 8类 × 5模态条件 × 4噪声条件 × 6人 × 8 ≈ **7680 条** |
 | 数据增强后总量 | ~**14400 条**（语音加噪、手势图像旋转/遮挡、触屏轨迹加高斯噪声） |
 | 模糊样本集 | 双模态冲突额外采集 **600 条**（每人 100 条，占比提升），人工标注"应执行/应拒绝" |
-| 划分 | **LOOCV（留一用户法）**：每次以 1 名受试者为测试集，其余 5 名为训练+验证集 |
+| 划分 | **LOOCV（留一用户法）**：每次以 1 名受试者为测试集，其余 5 名为训练+验证集（Platt scaling 校准使用验证集的独立子集，避免数据泄漏） |
+| 虚拟受试者增强 | 基于 6 人数据生成 4 名虚拟受试者（语音 Pitch Shift ±20%、手势骨架噪声注入），用于测试极端边缘情况，不参与主实验 LOOCV |
+| 用户分群分析 | 在结果部分分析"专家用户"与"新手用户"在 $w_m$ 分布上的差异，展示系统对不同用户的自适应能力 |
 
 **噪声条件复现方式**：
 - 低光照：关闭主灯，仅保留环境光（约 50 lux）
 - 背景噪声：扬声器播放标准化白噪声（60 dB SPL）
 - 手势遮挡：黑色遮挡板覆盖手部约 40% 面积
 
-**跨模态一致性定义**（用于 Layer 1 可靠性估计）：
+**跨模态一致性定义**（用于 Layer 1 可靠性估计，WMA 版本）：
 - 若多模态同时激活且映射到同一指令类别 $I$，则各模态一致性分数 +1
 - 若映射到不同类别，则冲突模态一致性分数 -1，一致模态不变
-- 滑动窗口（最近 10 次）平均后归一化到 [0,1] 作为 $\hat{r}_m^t$
+- 使用 WMA 加权平均（当前帧权重最高，指数衰减），归一化到 [0,1] 作为 $\hat{r}_m^t$
 
 **数据采集工具**：开发自动化录制脚本，支持实时标注（操作员按键记录真实意图），减少人工标注工作量。
 
