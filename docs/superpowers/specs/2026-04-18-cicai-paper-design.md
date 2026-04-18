@@ -92,18 +92,18 @@ $$\tilde{w}_m = \frac{w_m}{\sum_{m'} w_{m'}}$$
 
 $$\rho_{mn}(I) = \frac{N_I \cdot \hat{\rho}_{mn}(I) + N_0 \cdot \bar{\rho}_{mn}}{N_I + N_0}$$
 
-其中 $N_I$ 为指令 $I$ 的训练样本数，$N_0$ 为平滑超参数。
+其中 $N_I$ 为指令 $I$ 的训练样本数，$N_0$ 为**动态**平滑超参数：当 $N_I < 20$ 时大幅倾向全局先验（$N_0$ 取大值），$N_I$ 充足时 $N_0$ 取小值。**错误共现检测**：在估计 $\rho_{mn}(I)$ 前，先计算两模态在训练集中的错误共现率 $e_{mn}(I)$（两模态同时预测错误的频率）。若 $e_{mn}(I)$ 高，说明两模态在该指令下倾向于一起出错，相关性修正至关重要；若 $e_{mn}(I)$ 低（错误独立），则减弱修正强度（降低 $\rho_{mn}(I)$ 的有效权重）。
 
 $$\tilde{w}_m^{\text{eff}}(I) = \tilde{w}_m \cdot \left(1 - \max_{n \neq m} \rho_{mn}(I) \cdot \tilde{w}_n\right)$$
 
 推断公式（含集群状态先验）：
 
-$$P(I \mid o_v, o_g, o_s, \mathbf{s}) \propto P(I \mid \mathbf{s})^{\beta(\mathbf{s})} \cdot \prod_{m \in \{v,g,s\}} P(I \mid o_m)^{\tilde{w}_m^{\text{eff}}(I)}$$
+$$P(I \mid o_v, o_g, o_s, \mathbf{s}) = \frac{1}{Z} P(I \mid \mathbf{s})^{\beta(\mathbf{s})} \cdot \prod_{m \in \{v,g,s\}} P(I \mid o_m)^{\tilde{w}_m^{\text{eff}}(I)}$$
 
-**归一化注意**：由于 $\tilde{w}_m^{\text{eff}}(I)$ 对不同 $I$ 取值不同，归一化（Softmax）前必须对所有 $I \in \mathcal{C}$ 完整计算各自的 $\rho_{mn}(I)$，再统一归一化，否则概率分布失去物理意义。
+其中 $Z = \sum_{I' \in \mathcal{C}} P(I' \mid \mathbf{s})^{\beta(\mathbf{s})} \cdot \prod_m P(I' \mid o_m)^{\tilde{w}_m^{\text{eff}}(I')}$，显式写出归一化常数以体现对 PoE 变体数学严谨性的清晰认知。
 
 - $P(I \mid \mathbf{s})$：**学习得到的集群状态条件先验**，用轻量 MLP（2层，隐层 32 维）从 AirSim 飞行日志中学习 $P(I_t \mid I_{t-1}, \mathbf{s}_t)$。训练数据来源多样化：人工遥控轨迹 + 最优控制（A*）轨迹 + 随机扰动轨迹，避免 MLP 仅学习单一控制策略的近似。论文中强调 MLP 捕捉的是集群物理状态（编队连通度、电量非线性变化）与意图之间的复杂非线性关系，这是硬编码规则难以覆盖的。
-- $\beta(\mathbf{s})$：**动态先验强度**，与集群风险等级挂钩：平稳飞行时 $\beta$ 小（尊重人意图），低电量/紧急避障时 $\beta$ 大（强制干预）。**Safety Break 机制（带迟滞）**：进入条件为某模态置信度 $c_m > 0.95$ 且推断指令与先验最高概率指令完全相反，且该冲突持续 $K \geq 3$ 帧；退出条件为 $c_m < 0.85$（迟滞比较器防止高频抖动/Chattering）。触发后强制将 $\beta$ 降至 $\beta_{\min}$，触发"紧急人工接管"，保障 Human-in-the-loop 安全性。
+- $\beta(\mathbf{s})$：**动态先验强度**，与集群风险等级挂钩：平稳飞行时 $\beta$ 小（尊重人意图），低电量/紧急避障时 $\beta$ 大（强制干预）。**Safety Break 机制（带迟滞）**：进入条件为某模态置信度 $c_m > 0.95$ 且推断指令与先验最高概率指令完全相反，且该冲突持续 $K \geq 3$ 帧；退出条件为 $c_m < 0.85$（迟滞比较器防止高频抖动/Chattering）。触发后强制将 $\beta$ 降至 $\beta_{\min}$，触发"紧急人工接管"，并在 `multimodal_detector` 界面给予高亮提示（HCI 反馈）。AirSim 实验中记录用户在 Safety Break 触发后的反应时长，作为系统易用性的补充评价。
 - 每个专家 $P(I \mid o_m)$ 由校准后的置信度参数化（softmax over 指令类别）
 
 **Layer 3 — Decision Gate**
@@ -139,7 +139,7 @@ $$\text{param}^* = \arg\max_{p} \sum_{m: o_m \text{ 含参数}} \tilde{w}_m^{\te
 | 数据增强后总量 | ~**14400 条**（语音加噪、手势图像旋转/遮挡、触屏轨迹加高斯噪声） |
 | 模糊样本集 | 双模态冲突额外采集 **600 条**（每人 100 条，占比提升），人工标注"应执行/应拒绝" |
 | 划分 | **LOOCV（留一用户法）**：每次以 1 名受试者为测试集，其余 5 名为训练+验证集（Platt scaling 校准使用验证集的独立子集，避免数据泄漏） |
-| 虚拟受试者增强 | 基于 6 人数据生成 4 名虚拟受试者（语音 Pitch Shift ±20%、手势骨架噪声注入），用于测试极端边缘情况，不参与主实验 LOOCV |
+| 虚拟受试者增强 | 基于 6 人数据生成 4 名虚拟受试者（语音 Pitch Shift ±20%、手势骨架噪声注入），仅用于 **Stress Testing**（压力测试），不参与主实验 LOOCV，在论文 Experiments 部分明确区分 Main Results 与 Stress Testing |
 | 用户分群分析 | 在结果部分分析"专家用户"与"新手用户"在 $w_m$ 分布上的差异，展示系统对不同用户的自适应能力 |
 
 **噪声条件复现方式**：
@@ -228,8 +228,8 @@ $$\text{param}^* = \arg\max_{p} \sum_{m: o_m \text{ 含参数}} \tilde{w}_m^{\te
 
 | 周次 | 任务 |
 |------|------|
-| Week 1 (4/18–4/25) | 实现置信度校准 + 条件相关性修正 PoE + 集群状态先验 MLP + 动态 β + 决策门控；开发数据采集自动化脚本 |
+| Week 1 (4/18–4/25) | 实现置信度校准（优先）+ 条件相关性修正 PoE + 集群状态先验 MLP（含任务失败轨迹）+ 动态 β + Safety Break（含 UI 反馈）+ 决策门控；开发数据采集自动化脚本（含"一键标记无效样本"功能） |
 | Week 2 (4/26–5/2) | 数据采集（6名受试者，实采 ~7680 条 + 600 条冲突样本）；数据增强；AirSim 接口集成 |
-| Week 3 (5/3–5/9) | 运行 LOOCV 实验、消融实验、阈值调优；AirSim 环境退化实验 + 确认闭环仿真；生成置信度-权重动态演化图 |
+| Week 3 (5/3–5/9) | 运行 LOOCV 实验、消融实验、阈值调优；AirSim 环境退化 + 感知延迟 + 确认闭环实验；生成置信度-权重动态演化图 |
 | Week 4 (5/10–5/18) | 撰写论文（含 Related Work） |
 | Week 5 (5/19–5/25) | 润色、格式检查、提交 |
