@@ -53,8 +53,8 @@ def test_command_enum_has_8_classes():
 
 def test_command_enum_members():
     names = {c.name for c in Command}
-    expected = {"HOVER", "MOVE", "FORMATION", "LAND", "TAKEOFF",
-                "RETURN", "FOLLOW", "EMERGENCY"}
+    expected = {"HOVER", "MOVE_FWD", "FORMATION", "LAND", "TAKEOFF",
+                "ALT_UP", "ALT_DOWN", "CONFIRM"}
     assert names == expected
 
 def test_s_ij_shape():
@@ -92,27 +92,28 @@ import numpy as np
 
 class Command(Enum):
     # 8 个无人机集群指令类
-    HOVER      = auto()
-    MOVE       = auto()
-    FORMATION  = auto()
-    LAND       = auto()
     TAKEOFF    = auto()
-    RETURN     = auto()
-    FOLLOW     = auto()
-    EMERGENCY  = auto()
+    LAND       = auto()
+    HOVER      = auto()
+    ALT_UP     = auto()
+    ALT_DOWN   = auto()
+    MOVE_FWD   = auto()
+    FORMATION  = auto()
+    CONFIRM    = auto()
 
 # 语义相似度矩阵 S_IJ (8×8)，值越高表示两指令语义越接近
-# 行/列顺序与 Command 枚举值顺序一致
+# 行/列顺序与 Command 枚举值顺序一致:
+# TAKEOFF, LAND, HOVER, ALT_UP, ALT_DOWN, MOVE_FWD, FORMATION, CONFIRM
 _RAW = np.array([
-    # HOV  MOV  FOR  LAN  TAK  RET  FOL  EME
-    [1.00, 0.20, 0.15, 0.30, 0.30, 0.20, 0.10, 0.05],  # HOVER
-    [0.20, 1.00, 0.40, 0.10, 0.15, 0.25, 0.50, 0.05],  # MOVE
-    [0.15, 0.40, 1.00, 0.10, 0.15, 0.20, 0.30, 0.05],  # FORMATION
-    [0.30, 0.10, 0.10, 1.00, 0.20, 0.35, 0.05, 0.10],  # LAND
-    [0.30, 0.15, 0.15, 0.20, 1.00, 0.25, 0.10, 0.05],  # TAKEOFF
-    [0.20, 0.25, 0.20, 0.35, 0.25, 1.00, 0.20, 0.10],  # RETURN
-    [0.10, 0.50, 0.30, 0.05, 0.10, 0.20, 1.00, 0.05],  # FOLLOW
-    [0.05, 0.05, 0.05, 0.10, 0.05, 0.10, 0.05, 1.00],  # EMERGENCY
+    # TAK   LAN   HOV   AUP   ADN   MFW   FOR   CON
+    [1.00, 0.00, 0.40, 0.50, 0.20, 0.30, 0.20, 0.50],  # TAKEOFF
+    [0.00, 1.00, 0.40, 0.20, 0.50, 0.20, 0.20, 0.50],  # LAND
+    [0.40, 0.40, 1.00, 0.50, 0.50, 0.30, 0.30, 0.50],  # HOVER
+    [0.50, 0.20, 0.50, 1.00, 0.00, 0.40, 0.30, 0.50],  # ALT_UP
+    [0.20, 0.50, 0.50, 0.00, 1.00, 0.40, 0.30, 0.50],  # ALT_DOWN
+    [0.30, 0.20, 0.30, 0.40, 0.40, 1.00, 0.50, 0.50],  # MOVE_FWD
+    [0.20, 0.20, 0.30, 0.30, 0.30, 0.50, 1.00, 0.50],  # FORMATION
+    [0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 1.00],  # CONFIRM
 ], dtype=np.float32)
 
 S_IJ: np.ndarray = _RAW
@@ -325,34 +326,36 @@ git -C /home/ubuntu/NGW/intern/multimodal_detector add intent_engine/calibration
 # append to tests/intent_engine/test_calibration.py
 from intent_engine.calibration import TouchCalibrator
 
-def test_touch_calibrator_perfect_tap():
-    # 完美点击（误差为 0）应返回置信度 1.0
-    cal = TouchCalibrator(sigma=50.0)
-    score = cal.score(touch_xy=np.array([100.0, 200.0]),
-                      target_xy=np.array([100.0, 200.0]),
-                      pressure=1.0)
+def test_touch_calibrator_perfect_shape():
+    # 完美圆形（circularity=1.0）且顶点完全匹配（vertex_match=1.0）应返回置信度 1.0
+    cal = TouchCalibrator()
+    score = cal.score(circularity=1.0, vertex_match=1.0)
     assert abs(score - 1.0) < 1e-5
 
-def test_touch_calibrator_far_tap():
-    # 距离远超 sigma 时置信度应接近 0
-    cal = TouchCalibrator(sigma=50.0)
-    score = cal.score(touch_xy=np.array([0.0, 0.0]),
-                      target_xy=np.array([1000.0, 1000.0]),
-                      pressure=1.0)
-    assert score < 0.01
+def test_touch_calibrator_poor_shape():
+    # 形状质量差时置信度应接近 0
+    cal = TouchCalibrator()
+    score = cal.score(circularity=0.0, vertex_match=0.0)
+    assert score < 0.1
 
-def test_touch_calibrator_low_pressure():
-    # 低压力应降低置信度
-    cal = TouchCalibrator(sigma=50.0)
-    s_high = cal.score(np.array([100.0, 100.0]), np.array([100.0, 100.0]), pressure=1.0)
-    s_low  = cal.score(np.array([100.0, 100.0]), np.array([100.0, 100.0]), pressure=0.1)
-    assert s_high > s_low
+def test_touch_calibrator_partial_match():
+    # 部分匹配时置信度应在 (0, 1) 之间
+    cal = TouchCalibrator()
+    score = cal.score(circularity=0.6, vertex_match=0.7)
+    assert 0.0 < score < 1.0
+
+def test_touch_calibrator_output_range():
+    # 输出应始终在 [0, 1] 范围内
+    cal = TouchCalibrator()
+    for c, v in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (1.2, 0.8)]:
+        score = cal.score(circularity=c, vertex_match=v)
+        assert 0.0 <= score <= 1.0
 ```
 
 - [ ] **Step 2 — Run (expect failure)**
 
 ```bash
-pytest /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_calibration.py::test_touch_calibrator_perfect_tap /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_calibration.py::test_touch_calibrator_far_tap /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_calibration.py::test_touch_calibrator_low_pressure -v
+pytest /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_calibration.py::test_touch_calibrator_perfect_shape /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_calibration.py::test_touch_calibrator_poor_shape /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_calibration.py::test_touch_calibrator_partial_match /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_calibration.py::test_touch_calibrator_output_range -v
 ```
 
 Expected failure: `ImportError: cannot import name 'TouchCalibrator'`
@@ -361,26 +364,27 @@ Expected failure: `ImportError: cannot import name 'TouchCalibrator'`
 
 ```python
 class TouchCalibrator:
-    """基于几何距离和压力的触摸置信度评分"""
+    """
+    基于 OpenCV 轮廓分析的触摸形状几何评分
+    使用圆度 (circularity) 和顶点匹配度 (vertex_match) 替代固定置信度 1.0
+    """
 
-    def __init__(self, sigma: float = 50.0):
-        # sigma: 像素距离标准差，控制高斯衰减速率
-        self.sigma = sigma
+    def __init__(self, circularity_weight: float = 0.5,
+                 vertex_weight: float = 0.5):
+        # 两个几何指标的加权系数，默认等权
+        self.circularity_weight = circularity_weight
+        self.vertex_weight = vertex_weight
 
-    def score(self,
-              touch_xy: np.ndarray,
-              target_xy: np.ndarray,
-              pressure: float) -> float:
+    def score(self, circularity: float, vertex_match: float) -> float:
         """
-        touch_xy: (2,) 触摸坐标
-        target_xy: (2,) 目标区域中心坐标
-        pressure: [0,1] 触摸压力归一化值
-        返回: [0,1] 置信度分数
+        circularity:  [0,1] OpenCV 轮廓圆度分析结果
+                      (4π·area / perimeter²，完美圆形=1.0)
+        vertex_match: [0,1] 顶点匹配度（多边形顶点与模板的吻合程度）
+        返回: [0,1] 校准后置信度分数
         """
-        dist = float(np.linalg.norm(touch_xy - target_xy))
-        # 高斯空间衰减 × 压力权重
-        spatial = float(np.exp(-0.5 * (dist / self.sigma) ** 2))
-        return float(np.clip(spatial * pressure, 0.0, 1.0))
+        raw = (self.circularity_weight * circularity
+               + self.vertex_weight * vertex_match)
+        return float(np.clip(raw, 0.0, 1.0))
 ```
 
 - [ ] **Step 4 — Run (expect PASS)**
@@ -389,12 +393,12 @@ class TouchCalibrator:
 pytest /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_calibration.py -v
 ```
 
-Expected: `7 passed`
+Expected: `8 passed`
 
 - [ ] **Step 5 — Commit**
 
 ```bash
-git -C /home/ubuntu/NGW/intern/multimodal_detector add intent_engine/calibration.py tests/intent_engine/test_calibration.py && git -C /home/ubuntu/NGW/intern/multimodal_detector commit -m "feat(calibration): TouchCalibrator with Gaussian geometric score"
+git -C /home/ubuntu/NGW/intern/multimodal_detector add intent_engine/calibration.py tests/intent_engine/test_calibration.py && git -C /home/ubuntu/NGW/intern/multimodal_detector commit -m "feat(calibration): TouchCalibrator with shape geometry score (circularity + vertex_match)"
 ```
 
 ---
@@ -601,6 +605,48 @@ def test_poe_sparsity_smoothing():
     p1 = np.zeros(8); p1[1] = 1.0
     result = poe.fuse([p0, p1], [0.5, 0.5])
     assert result.min() > 0.0
+
+def test_poe_per_command_rho_shape():
+    # rho 矩阵形状应为 (n_classes, n_modalities, n_modalities)
+    poe = PoEFusion(n_classes=8, n_modalities=3)
+    assert poe._rho.shape == (8, 3, 3)
+
+def test_poe_fit_formation_higher_rho_than_takeoff():
+    # 拟合后 FORMATION（手势+触摸相关）的 rho 应高于 TAKEOFF（不相关）
+    # FORMATION index=6, TAKEOFF index=0 (using Command enum order: TAKEOFF=0,LAND=1,...,FORMATION=6)
+    poe = PoEFusion(n_classes=8, n_modalities=3)
+    rng = np.random.default_rng(0)
+    N = 60  # 足够样本触发正常平滑（N_I >= 20）
+
+    # TAKEOFF 样本：三模态误差独立（e_mn 低）
+    # 模态预测: voice=correct, gesture=correct, touch=correct (独立随机错误)
+    takeoff_data = []
+    for _ in range(N):
+        # 各模态独立以 0.2 概率出错
+        v_wrong = rng.random() < 0.2
+        g_wrong = rng.random() < 0.2
+        t_wrong = rng.random() < 0.2
+        takeoff_data.append((0, [v_wrong, g_wrong, t_wrong]))
+
+    # FORMATION 样本：手势(1)和触摸(2)误差高度相关
+    formation_data = []
+    for _ in range(N):
+        v_wrong = rng.random() < 0.2
+        # gesture 和 touch 同时出错（相关）
+        both_wrong = rng.random() < 0.4
+        g_wrong = both_wrong
+        t_wrong = both_wrong
+        formation_data.append((6, [v_wrong, g_wrong, t_wrong]))
+
+    training_data = takeoff_data + formation_data
+    poe.fit(training_data)
+
+    # FORMATION 的 gesture-touch 相关系数应高于 TAKEOFF 的
+    rho_formation_gt = poe._rho[6, 1, 2]  # FORMATION: gesture(1) ↔ touch(2)
+    rho_takeoff_gt   = poe._rho[0, 1, 2]  # TAKEOFF:   gesture(1) ↔ touch(2)
+    assert rho_formation_gt > rho_takeoff_gt, (
+        f"Expected rho_FORMATION({rho_formation_gt:.3f}) > rho_TAKEOFF({rho_takeoff_gt:.3f})"
+    )
 ```
 
 - [ ] **Step 2 — Run (expect failure)**
@@ -616,13 +662,15 @@ Expected failure: `ModuleNotFoundError: No module named 'intent_engine.layer2_po
 ```python
 # intent_engine/layer2_poe.py
 import numpy as np
+from typing import List, Tuple
 
 class PoEFusion:
     """
     Layer 2: 相关性修正的积专家 (Product of Experts) 融合
-    - 条件相关系数 rho_mn(I) 修正
+    - 逐指令条件相关系数矩阵 rho_mn(I)，形状 (n_classes, n_modalities, n_modalities)
+    - fit() 方法从训练数据估计 rho_mn(I)，含稀疏平滑（动态 N_0）
+    - 误差共现追踪 e_mn(I)：当误差独立时降低有效 rho
     - 稀疏平滑 (epsilon)
-    - 误差共现矩阵（简化为对角修正）
     - 显式 Z 归一化
     """
 
@@ -632,16 +680,73 @@ class PoEFusion:
         self.n_modalities = n_modalities
         self.epsilon = epsilon  # 稀疏平滑系数
 
-        # 条件相关系数矩阵 rho[m,n] ∈ [0,1]，初始化为低相关
-        # 形状: (n_modalities, n_modalities)
-        self._rho = np.eye(n_modalities, dtype=np.float32) * 0.0 + 0.1
-        np.fill_diagonal(self._rho, 1.0)
+        # 逐指令相关系数矩阵 rho[I, m, n] ∈ [0,1]
+        # 形状: (n_classes, n_modalities, n_modalities)，初始化为低相关
+        self._rho = np.full((n_classes, n_modalities, n_modalities),
+                            0.1, dtype=np.float32)
+        for i in range(n_classes):
+            np.fill_diagonal(self._rho[i], 1.0)
 
-    def fuse(self, modality_probs: list[np.ndarray],
-             reliabilities: list[float]) -> np.ndarray:
+    def fit(self, training_data: List[Tuple[int, List[bool]]]) -> "PoEFusion":
+        """
+        从训练数据估计逐指令相关系数矩阵 rho_mn(I)。
+
+        training_data: list of (command_idx, wrong_flags)
+            command_idx: int，真实指令类别索引
+            wrong_flags: list[bool]，长度 n_modalities，各模态是否预测错误
+
+        算法:
+        1. 统计每个指令类 I 的样本数 N_I 和误差共现次数 e_mn(I)
+        2. 动态稀疏平滑: N_0 = 40 when N_I < 20, else N_0 = 5
+        3. rho_mn(I) = (e_mn(I) + N_0 * prior) / (N_I + N_0)
+        4. 当 e_mn(I) 低（误差独立）时，降低有效 rho
+        """
+        # 统计每类样本数和误差共现次数
+        counts = np.zeros(self.n_classes, dtype=np.float32)
+        co_occur = np.zeros((self.n_classes, self.n_modalities, self.n_modalities),
+                            dtype=np.float32)
+
+        for cmd_idx, wrong_flags in training_data:
+            counts[cmd_idx] += 1
+            for m in range(self.n_modalities):
+                for n in range(self.n_modalities):
+                    if wrong_flags[m] and wrong_flags[n]:
+                        co_occur[cmd_idx, m, n] += 1
+
+        # 估计 rho_mn(I) 含动态稀疏平滑
+        prior = 0.1  # 先验相关系数（低相关）
+        for i in range(self.n_classes):
+            N_I = counts[i]
+            # 动态 N_0：样本稀少时使用大平滑系数
+            N_0 = 40.0 if N_I < 20 else 5.0
+
+            for m in range(self.n_modalities):
+                for n in range(self.n_modalities):
+                    if m == n:
+                        self._rho[i, m, n] = 1.0
+                        continue
+                    e_mn = co_occur[i, m, n]
+                    # 平滑估计
+                    rho_est = (e_mn + N_0 * prior) / (N_I + N_0)
+                    # 误差独立性修正：e_mn 低时降低有效 rho
+                    # 独立基准: P(m wrong) * P(n wrong)
+                    p_m = co_occur[i, m, m] / max(N_I, 1)
+                    p_n = co_occur[i, n, n] / max(N_I, 1)
+                    independent_baseline = p_m * p_n
+                    # 若实际共现接近独立基准，rho 趋向先验
+                    if e_mn / max(N_I, 1) <= independent_baseline + 0.05:
+                        rho_est = prior
+                    self._rho[i, m, n] = float(np.clip(rho_est, 0.0, 1.0))
+
+        return self
+
+    def fuse(self, modality_probs: list,
+             reliabilities: list,
+             command_hint: int = -1) -> np.ndarray:
         """
         modality_probs: list of (n_classes,) 各模态概率分布
         reliabilities:  list of float 各模态可靠性权重
+        command_hint:   当前最可能指令索引（用于选择 rho 切片），-1 表示自动选择
         返回: (n_classes,) 融合后归一化概率
         """
         assert len(modality_probs) == len(reliabilities)
@@ -651,13 +756,21 @@ class PoEFusion:
         smoothed = [np.clip(p, self.epsilon, 1.0) for p in modality_probs]
         smoothed = [p / p.sum() for p in smoothed]
 
+        # 选择 rho 切片：使用 command_hint 或当前最高概率类别
+        if command_hint >= 0:
+            cmd_idx = command_hint
+        else:
+            # 用均匀权重的初步 PoE 估计主导类别
+            log_init = sum(np.log(p + 1e-12) for p in smoothed)
+            cmd_idx = int(np.argmax(log_init))
+
+        rho_I = self._rho[cmd_idx]  # (n_modalities, n_modalities)
+
         # 相关性修正权重：高相关模态对降低有效权重
-        # 简化：使用可靠性作为基础权重，相关性修正为平均相关系数
         eff_weights = np.array(reliabilities, dtype=np.float32)
         for m in range(n):
-            corr_sum = sum(self._rho[m, k] for k in range(n) if k != m)
+            corr_sum = sum(float(rho_I[m, k]) for k in range(n) if k != m)
             avg_corr = corr_sum / max(n - 1, 1)
-            # 相关性越高，有效权重越低
             eff_weights[m] *= (1.0 - 0.3 * avg_corr)
 
         # PoE: log P_fused(I) ∝ Σ_m w_m * log P_m(I)
@@ -678,12 +791,12 @@ class PoEFusion:
 pytest /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_layer2.py -v
 ```
 
-Expected: `4 passed`
+Expected: `6 passed`
 
 - [ ] **Step 5 — Commit**
 
 ```bash
-git -C /home/ubuntu/NGW/intern/multimodal_detector add intent_engine/layer2_poe.py tests/intent_engine/test_layer2.py && git -C /home/ubuntu/NGW/intern/multimodal_detector commit -m "feat(layer2): correlation-corrected PoE fusion with sparsity smoothing"
+git -C /home/ubuntu/NGW/intern/multimodal_detector add intent_engine/layer2_poe.py tests/intent_engine/test_layer2.py && git -C /home/ubuntu/NGW/intern/multimodal_detector commit -m "feat(layer2): per-command rho (8,3,3), fit() with dynamic N_0 sparsity smoothing, error co-occurrence"
 ```
 
 ---
@@ -778,7 +891,8 @@ class FormationConsensus:
 pytest /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_layer2.py -v
 ```
 
-Expected: `7 passed`
+Expected: `9 passed`
+```
 
 - [ ] **Step 5 — Commit**
 
@@ -950,14 +1064,14 @@ from intent_engine.swarm_prior_mlp import SwarmPriorMLP
 
 def test_mlp_output_shape():
     # 输入: battery(1) + connectivity(1) + delta_features(3) + prev_command_onehot(8) = 13
-    mlp = SwarmPriorMLP(input_dim=13, hidden_dim=64, n_classes=8)
+    mlp = SwarmPriorMLP(input_dim=13, hidden_dim=32, n_classes=8)
     x = torch.zeros(1, 13)
     out = mlp(x)
     assert out.shape == (1, 8)
 
 def test_mlp_output_is_probability():
     # 输出应为概率分布（softmax 后各值 > 0，和为 1）
-    mlp = SwarmPriorMLP(input_dim=13, hidden_dim=64, n_classes=8)
+    mlp = SwarmPriorMLP(input_dim=13, hidden_dim=32, n_classes=8)
     x = torch.randn(4, 13)
     out = mlp(x)
     assert torch.all(out > 0)
@@ -975,9 +1089,12 @@ def test_mlp_swarm_state_encoding():
     )
     feat = state.to_feature_vector()
     assert feat.shape == (13,)
-    # prev_command one-hot 第 2 位应为 1
-    assert feat[5] == pytest.approx(1.0)  # 1+1+3=5, index 2 → offset 5+2=7? check
-    assert feat[2 + 1 + 3] == pytest.approx(1.0)  # battery(1)+conn(1)+delta(3)=5, +2=7
+    # 特征向量布局: battery(0), connectivity(1), delta_battery(2),
+    # delta_connectivity(3), task_phase(4), prev_command_onehot(5..12)
+    # prev_command_idx=2 → one-hot 位于 feat[5+2] = feat[7]
+    assert feat[7] == pytest.approx(1.0)   # feat[5 + prev_command_idx=2] = feat[7]
+    assert feat[5] == pytest.approx(0.0)   # feat[5+0] should be 0
+    assert feat[6] == pytest.approx(0.0)   # feat[5+1] should be 0
 ```
 
 - [ ] **Step 2 — Run (expect failure)**
@@ -995,17 +1112,17 @@ Expected failure: `ModuleNotFoundError: No module named 'intent_engine.swarm_pri
 import numpy as np
 import torch
 import torch.nn as nn
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 class SwarmPriorMLP(nn.Module):
     """
     集群先验 MLP: P(I | swarm_state)
-    输入: battery_mean(1) + connectivity_ratio(1) + position_delta(3)
-          + prev_command_onehot(n_classes) = 5 + n_classes
+    输入: battery(1) + connectivity(1) + delta_battery(1) + delta_connectivity(1)
+          + task_phase(1) + prev_command_onehot(n_classes) = 5 + n_classes
     输出: n_classes 类概率分布（softmax）
     """
 
-    def __init__(self, input_dim: int = 13, hidden_dim: int = 64,
+    def __init__(self, input_dim: int = 13, hidden_dim: int = 32,
                  n_classes: int = 8):
         super().__init__()
         self.net = nn.Sequential(
@@ -1024,21 +1141,28 @@ class SwarmPriorMLP(nn.Module):
 @dataclass
 class SwarmState:
     """集群状态编码辅助类"""
-    battery_mean: float        # 平均电量 [0,1]
-    connectivity_ratio: float  # 连接比例 [0,1]
-    position_delta: np.ndarray # 位置变化量 (3,)
-    prev_command_idx: int      # 上一帧指令索引
+    battery_mean: float        # 平均电量 [0,1]          → index 0
+    connectivity_ratio: float  # 连接比例 [0,1]          → index 1
+    position_delta: np.ndarray # (3,): delta_battery,    → index 2
+                               #        delta_connectivity,→ index 3
+                               #        task_phase         → index 4
+    prev_command_idx: int      # 上一帧指令索引           → one-hot at index 5+
     n_classes: int = 8
 
     def to_feature_vector(self) -> np.ndarray:
-        """编码为 (1 + 1 + 3 + n_classes,) 特征向量"""
+        """
+        编码为 (5 + n_classes,) 特征向量
+        布局: [battery, connectivity, delta_battery, delta_connectivity,
+               task_phase, prev_command_onehot(n_classes)]
+        prev_command_idx=k → feat[5+k] == 1.0
+        """
         one_hot = np.zeros(self.n_classes, dtype=np.float32)
         one_hot[self.prev_command_idx] = 1.0
         return np.concatenate([
             [self.battery_mean],
             [self.connectivity_ratio],
-            self.position_delta.astype(np.float32),
-            one_hot,
+            self.position_delta.astype(np.float32),  # 3 values: indices 2,3,4
+            one_hot,                                  # n_classes values: indices 5..5+n_classes-1
         ]).astype(np.float32)
 ```
 
@@ -1158,7 +1282,7 @@ class IntentEngine:
 
         # 集群先验 MLP（输入维度: 1+1+3+n_classes）
         input_dim = 5 + n_classes
-        self._mlp = SwarmPriorMLP(input_dim=input_dim, hidden_dim=64,
+        self._mlp = SwarmPriorMLP(input_dim=input_dim, hidden_dim=32,
                                    n_classes=n_classes)
         self._mlp.eval()
 
@@ -1225,6 +1349,8 @@ pytest /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/test_engi
 
 Expected: `6 passed`
 
+> **Note:** The `prior_weight` parameter in `IntentEngine` acts as a fixed scalar (0.2) blending the MLP prior into PoE. The dynamic prior weight `beta(s)` — which should adapt based on swarm state quality — is a **stub** in this implementation (fixed at 0.2). Full `beta(s)` estimation is a Week 2 task.
+
 - [ ] **Step 5 — Commit**
 
 ```bash
@@ -1241,7 +1367,7 @@ After all tasks are complete, run the full suite:
 pytest /home/ubuntu/NGW/intern/multimodal_detector/tests/intent_engine/ -v --tb=short
 ```
 
-Expected: all tests pass (approximately 24 tests across 5 files).
+Expected: all tests pass (approximately 28 tests across 5 files).
 
 ---
 
@@ -1250,6 +1376,6 @@ Expected: all tests pass (approximately 24 tests across 5 files).
 - All modules are standalone — no imports from `multimodal_detector` source code. The thin adapter (not in this plan) will translate detector outputs to the format expected by `IntentEngine.infer()`.
 - The `SwarmPriorMLP` is untrained at this stage. Task 9 only validates architecture and forward pass. Training data collection and fine-tuning are Week 2 tasks.
 - Chinese comments are encouraged for internal logic; public API docstrings should be bilingual or English-only for paper reproducibility.
-- Keep `epsilon=1e-4` as the default sparsity smoothing value in `PoEFusion` — this was validated against the CICAI 2026 baseline dataset.
+- Keep `epsilon=1e-4` as the default sparsity smoothing value in `PoEFusion`.
 
 
