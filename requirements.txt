@@ -7,8 +7,8 @@ PySide6>=6.5.0
 # 计算机视觉
 opencv-python>=4.8.0
 
-# 语音识别 (Whisper)
-openai-whisper>=20231117
+# 语音识别 (FunASR)
+funasr>=1.0.0
 
 # 音频录制
 sounddevice>=0.4.6
