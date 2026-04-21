@@ -2,12 +2,29 @@ import pytest
 import numpy as np
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import queue
+import types
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from detectors.base_detector import DetectionResult
+
+
+@pytest.fixture(autouse=True)
+def fake_funasr_module():
+    """Inject a fake 'funasr' module into sys.modules so patch() can resolve it."""
+    if "funasr" not in sys.modules:
+        mod = types.ModuleType("funasr")
+        mod.AutoModel = MagicMock()
+        sys.modules["funasr"] = mod
+    funasr_mod = sys.modules["funasr"]
+    funasr_mod.AutoModel = MagicMock()
+    # Ensure the module-level AutoModel in funasr_worker is reset each test
+    import workers.funasr_worker as m
+    m.AutoModel = None
+    yield funasr_mod
+    m.AutoModel = None
 
 
 @pytest.fixture
@@ -18,16 +35,15 @@ def mock_funasr_model():
 
 
 @pytest.fixture
-def worker(qtbot, mock_funasr_model):
-    with patch("workers.funasr_worker.AutoModel") as MockAutoModel:
-        MockAutoModel.return_value = mock_funasr_model
-        from workers.funasr_worker import FunASRWorker, _STOP
-        w = FunASRWorker()
-        assert w.initialize() is True
-        w.start()
-        yield w
-        w.release()
-        w.wait(2000)  # run() exits on _STOP sentinel
+def worker(qtbot, mock_funasr_model, fake_funasr_module):
+    fake_funasr_module.AutoModel = MagicMock(return_value=mock_funasr_model)
+    from workers.funasr_worker import FunASRWorker, _STOP
+    w = FunASRWorker()
+    assert w.initialize() is True
+    w.start()
+    yield w
+    w.release()
+    w.wait(2000)  # run() exits on _STOP sentinel
 
 
 def test_eos_triggers_detection_ready(qtbot, worker, mock_funasr_model):
@@ -66,19 +82,20 @@ def test_partial_result_emitted(qtbot, worker, mock_funasr_model):
 def test_queue_overflow_drops_oldest_not_eos(qtbot, worker):
     """Queue overflow drops audio chunks but never the EOS sentinel."""
     chunk = np.zeros(100, dtype=np.float32)
-    # Fill beyond limit (21 items)
     for _ in range(22):
         worker.enqueue(chunk)
+    # Queue should be capped at _QUEUE_MAX (20), not 22
+    assert worker._queue.qsize() <= 20
     # EOS must still be accepted and processed
     with qtbot.waitSignal(worker.detection_ready, timeout=3000):
         worker.send_eos()
 
 
-def test_initialize_failure_returns_false(qtbot):
-    with patch("workers.funasr_worker.AutoModel", side_effect=Exception("load fail")):
-        from workers.funasr_worker import FunASRWorker
-        w = FunASRWorker()
-        assert w.initialize() is False
+def test_initialize_failure_returns_false(qtbot, fake_funasr_module):
+    fake_funasr_module.AutoModel = MagicMock(side_effect=Exception("load fail"))
+    from workers.funasr_worker import FunASRWorker
+    w = FunASRWorker()
+    assert w.initialize() is False
 
 
 def test_enqueue_before_init_returns_false(qtbot):
@@ -88,11 +105,10 @@ def test_enqueue_before_init_returns_false(qtbot):
     assert w.enqueue(chunk) is False
 
 
-def test_is_initialized_property(qtbot, mock_funasr_model):
-    with patch("workers.funasr_worker.AutoModel") as MockAutoModel:
-        MockAutoModel.return_value = mock_funasr_model
-        from workers.funasr_worker import FunASRWorker
-        w = FunASRWorker()
-        assert w.is_initialized is False
-        w.initialize()
-        assert w.is_initialized is True
+def test_is_initialized_property(qtbot, mock_funasr_model, fake_funasr_module):
+    fake_funasr_module.AutoModel = MagicMock(return_value=mock_funasr_model)
+    from workers.funasr_worker import FunASRWorker
+    w = FunASRWorker()
+    assert w.is_initialized is False
+    w.initialize()
+    assert w.is_initialized is True

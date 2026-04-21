@@ -13,14 +13,6 @@ AutoModel = None
 
 _STOP = object()   # sentinel to exit run() loop — distinct from EOS (None)
 
-
-def _lazy_import():
-    global AutoModel
-    if AutoModel is None:
-        from funasr import AutoModel as _AutoModel
-        AutoModel = _AutoModel
-
-
 _DEVICE_RATE = 48000
 _MODEL_RATE = 16000
 _CHUNK_SAMPLES = 7200   # ~450ms @ 16kHz
@@ -47,8 +39,8 @@ class FunASRWorker(QThread):
     def initialize(self) -> bool:
         try:
             self.status_changed.emit("正在加载 FunASR 模型...")
-            _lazy_import()
-            self._model = AutoModel(
+            from funasr import AutoModel as _AutoModel
+            self._model = _AutoModel(
                 model="paraformer-zh-streaming",
                 disable_update=True,
             )
@@ -63,15 +55,23 @@ class FunASRWorker(QThread):
         if not self._is_initialized:
             return False
         if self._queue.qsize() >= _QUEUE_MAX:
-            try:
-                dropped = self._queue.get_nowait()
-                if dropped is None or dropped is _STOP:
-                    # Never drop EOS or STOP sentinels
-                    self._queue.put(dropped)
-                else:
+            # Drain, drop oldest non-sentinel, re-fill
+            items = []
+            while True:
+                try:
+                    items.append(self._queue.get_nowait())
+                except queue.Empty:
+                    break
+            dropped = False
+            kept = []
+            for item in items:
+                if not dropped and item is not None and item is not _STOP:
                     logger.warning(f"队列积压，丢弃最旧音频块 @ {time.time():.3f}")
-            except queue.Empty:
-                pass
+                    dropped = True
+                else:
+                    kept.append(item)
+            for item in kept:
+                self._queue.put(item)
         self._queue.put(chunk)
         return True
 
