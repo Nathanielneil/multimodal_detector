@@ -53,18 +53,19 @@ FunASR Paraformer-zh-streaming
 ### 按住按键（开始录音）
 
 1. `main_window` 调用 `voice_detector.start_recording()`
-2. sounddevice InputStream callback 每块（约 450ms，7200 samples @ 16kHz）：
+2. sounddevice InputStream callback 每块（blocksize=1024 @ 48kHz ≈ 21ms）：
    - 发出 `volume_changed(float)` → overlay 波形
    - 发出 `audio_chunk(np.ndarray)` → FunASRWorker 队列
-3. FunASRWorker 从队列取块，调用 `model.generate(chunk, is_final=False)`
-4. 收到中间文本 → 发出 `partial_result_ready(str)` → overlay 实时字幕
+3. FunASRWorker 从队列取块，重采样至 16kHz，内部缓冲至约 7200 samples（≈450ms），调用 `model.generate(input=chunk_16k, cache=cache_dict, is_final=False)`
+4. 收到中间文本 → 发出 `partial_result_ready(str)` → `voice_overlay.set_result(text, 0.0, "")` 显示实时字幕
 
 ### 松开按键（停止录音）
 
 1. `main_window` 调用 `voice_detector.stop_recording()`
-2. VoiceDetector 关闭 InputStream，向队列推入 `None`（EOS 哨兵）
-3. FunASRWorker 收到 `None`，调用 `model.generate(is_final=True)`
+2. VoiceDetector 关闭 InputStream，调用 `funasr_worker.send_eos()`（推入 None 哨兵）
+3. FunASRWorker 收到 None，将剩余缓冲块（若有）连同 `is_final=True` 一起送入 `model.generate()`
 4. 构造 `DetectionResult(modal_type="voice", command=text, ...)` 发出 `detection_ready`
+5. EOS 哨兵不会被队列积压丢弃逻辑丢弃
 
 ### Push-to-Talk 按键绑定
 
@@ -89,8 +90,9 @@ class FunASRWorker(QThread):
 ## VoiceDetector 变更摘要
 
 - 移除：`whisper` 依赖、`_transcribe()`、`_model`、`stop_recording()` 返回值
-- 新增：`audio_chunk = Signal(np.ndarray)` 信号
-- `stop_recording()`：关闭 stream，不再做推理，调用方负责发 EOS
+- 新增：`audio_chunk = Signal(np.ndarray)` 信号；构造函数接收 `funasr_worker` 引用
+- `stop_recording()`：关闭 stream，调用 `self._funasr_worker.send_eos()`，不再做推理
+- `enqueue()` 在模型未初始化时返回 False，`start_recording()` 检查 worker 已初始化后才开流
 
 ## 错误处理
 
@@ -98,7 +100,7 @@ class FunASRWorker(QThread):
 |------|----------|
 | FunASR 加载失败 | `initialize()` 返回 False，发出 `error_occurred`，语音模态禁用 |
 | 推理异常 | worker 捕获，发出 `error_occurred`，清空队列，状态重置 |
-| 队列积压（>20块，约9秒） | 丢弃最旧块，记录 warning |
+| 队列积压（>20块，约9秒） | 丢弃最旧块，记录 warning（含时间戳）；EOS 哨兵（None）永不丢弃 |
 | 按键重入 / autoRepeat | `_recording_lock` 保护，`isAutoRepeat()` 直接忽略 |
 
 ## 测试策略
@@ -110,8 +112,12 @@ class FunASRWorker(QThread):
 ## 依赖
 
 ```
-pip install funasr
+pip install funasr>=1.0.0
+# FunASR API: AutoModel(model="paraformer-zh-streaming")
+# model.generate(input=chunk_16k, cache=cache_dict, is_final=bool, chunk_size=[0,10,5])
 # 模型首次运行时自动下载 paraformer-zh-streaming
 ```
 
 GPU 显存需求：约 1-2GB（RTX 3080 可用）
+
+需在 `requirements.txt` 中添加 `funasr>=1.0.0`
