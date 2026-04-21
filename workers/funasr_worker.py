@@ -1,4 +1,5 @@
 import queue
+import threading
 import time
 import numpy as np
 from typing import Optional
@@ -30,6 +31,7 @@ class FunASRWorker(QThread):
         self._model = None
         self._is_initialized = False
         self._queue: queue.Queue = queue.Queue()
+        self._queue_lock = threading.Lock()
         self._cache: dict = {}
 
     @property
@@ -54,25 +56,28 @@ class FunASRWorker(QThread):
     def enqueue(self, chunk: np.ndarray) -> bool:
         if not self._is_initialized:
             return False
-        if self._queue.qsize() >= _QUEUE_MAX:
-            # Drain, drop oldest non-sentinel, re-fill
-            items = []
-            while True:
-                try:
-                    items.append(self._queue.get_nowait())
-                except queue.Empty:
-                    break
-            dropped = False
-            kept = []
-            for item in items:
-                if not dropped and item is not None and item is not _STOP:
-                    logger.warning(f"队列积压，丢弃最旧音频块 @ {time.time():.3f}")
-                    dropped = True
-                else:
-                    kept.append(item)
-            for item in kept:
-                self._queue.put(item)
-        self._queue.put(chunk)
+        with self._queue_lock:
+            if self._queue.qsize() >= _QUEUE_MAX:
+                items = []
+                while True:
+                    try:
+                        items.append(self._queue.get_nowait())
+                    except queue.Empty:
+                        break
+                dropped = False
+                kept = []
+                for item in items:
+                    if not dropped and item is not None and item is not _STOP:
+                        logger.warning(f"队列积压，丢弃最旧音频块 @ {time.time():.3f}")
+                        dropped = True
+                    else:
+                        kept.append(item)
+                for item in kept:
+                    self._queue.put(item)
+                if not dropped:
+                    # Queue full of sentinels — discard new chunk silently
+                    return True
+            self._queue.put(chunk)
         return True
 
     def send_eos(self):
