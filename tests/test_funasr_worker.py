@@ -20,11 +20,7 @@ def fake_funasr_module():
         sys.modules["funasr"] = mod
     funasr_mod = sys.modules["funasr"]
     funasr_mod.AutoModel = MagicMock()
-    # Ensure the module-level AutoModel in funasr_worker is reset each test
-    import workers.funasr_worker as m
-    m.AutoModel = None
     yield funasr_mod
-    m.AutoModel = None
 
 
 @pytest.fixture
@@ -117,3 +113,12 @@ def test_is_initialized_property(qtbot, mock_funasr_model, fake_funasr_module):
     assert w.is_initialized is False
     w.initialize()
     assert w.is_initialized is True
+
+
+def test_queue_overflow_eos_still_processed(qtbot, worker):
+    """After overflow, EOS sentinel is still processed and triggers detection_ready."""
+    chunk = np.zeros(100, dtype=np.float32)
+    for _ in range(22):
+        worker.enqueue(chunk)
+    with qtbot.waitSignal(worker.detection_ready, timeout=3000):
+        worker.send_eos()

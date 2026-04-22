@@ -1,3 +1,6 @@
+"""
+FunASR 流式推理工作线程 - 接收音频块，运行 Paraformer-zh-streaming 推理，发送识别结果
+"""
 import queue
 import threading
 import time
@@ -9,8 +12,6 @@ from utils.logger import get_logger
 from detectors.base_detector import DetectionResult
 
 logger = get_logger(__name__)
-
-AutoModel = None
 
 _STOP = object()   # sentinel to exit run() loop — distinct from EOS (None)
 
@@ -82,7 +83,8 @@ class FunASRWorker(QThread):
 
     def send_eos(self):
         """Push EOS sentinel — triggers final inference."""
-        self._queue.put(None)
+        with self._queue_lock:
+            self._queue.put(None)
 
     def run(self):
         buf = np.array([], dtype=np.float32)
@@ -96,6 +98,7 @@ class FunASRWorker(QThread):
                 break
 
             is_final = item is None
+            final_emitted = False
 
             if not is_final:
                 # Resample device rate (48kHz) → model rate (16kHz)
@@ -112,6 +115,8 @@ class FunASRWorker(QThread):
                     buf = buf[_CHUNK_SAMPLES:]
 
                 try:
+                    if self._model is None:
+                        break
                     res = self._model.generate(
                         input=chunk,
                         cache=self._cache,
@@ -128,6 +133,7 @@ class FunASRWorker(QThread):
                                 details={"model": "paraformer-zh-streaming"},
                             )
                             self.detection_ready.emit(result)
+                            final_emitted = True
                         else:
                             self.partial_result_ready.emit(text)
                 except Exception as e:
@@ -138,6 +144,8 @@ class FunASRWorker(QThread):
                     break
 
             if is_final:
+                if not final_emitted:
+                    self.status_changed.emit("未识别到语音")
                 self._cache = {}
                 buf = np.array([], dtype=np.float32)
 
