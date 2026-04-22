@@ -46,6 +46,7 @@ class FunASRWorker(QThread):
             self._model = _AutoModel(
                 model="paraformer-zh-streaming",
                 disable_update=True,
+                device="cuda",
             )
             self._is_initialized = True
             self.status_changed.emit("FunASR 模型加载完成")
