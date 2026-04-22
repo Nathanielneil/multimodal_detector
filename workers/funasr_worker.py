@@ -31,6 +31,7 @@ class FunASRWorker(QThread):
         super().__init__(parent)
         self._model = None
         self._is_initialized = False
+        self._accepting = False   # only True between start_session/send_eos
         self._queue: queue.Queue = queue.Queue()
         self._queue_lock = threading.Lock()
         self._cache: dict = {}
@@ -56,7 +57,7 @@ class FunASRWorker(QThread):
             return False
 
     def enqueue(self, chunk: np.ndarray) -> bool:
-        if not self._is_initialized:
+        if not self._is_initialized or not self._accepting:
             return False
         with self._queue_lock:
             if self._queue.qsize() >= _QUEUE_MAX:
@@ -84,8 +85,13 @@ class FunASRWorker(QThread):
 
     def send_eos(self):
         """Push EOS sentinel — triggers final inference."""
+        self._accepting = False
         with self._queue_lock:
             self._queue.put(None)
+
+    def start_session(self):
+        """Allow audio chunks to be enqueued (call before start_recording)."""
+        self._accepting = True
 
     def run(self):
         buf = np.array([], dtype=np.float32)

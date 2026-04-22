@@ -68,6 +68,9 @@ class VoiceDetector(BaseDetector):
         self.status_changed.emit(f"正在录音... ({device_info})")
         self.recording_started.emit()
 
+        if self._funasr_worker is not None:
+            self._funasr_worker.start_session()
+
         self._record_thread = threading.Thread(target=self._record_audio, daemon=True)
         self._record_thread.start()
 
