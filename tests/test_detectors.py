@@ -130,24 +130,24 @@ class TestVoiceDetector:
 
     @pytest.fixture
     def voice_detector(self):
-        """Create a voice detector with mocked Whisper"""
-        with patch("detectors.voice_detector.whisper", MagicMock()):
-            with patch("detectors.voice_detector.sounddevice", MagicMock()):
-                with patch("detectors.voice_detector.scipy_io", MagicMock()):
-                    from detectors.voice_detector import VoiceDetector
-                    detector = VoiceDetector(model_name="tiny")
-                    return detector
+        """Create a voice detector with mocked sounddevice"""
+        with patch("detectors.voice_detector.sounddevice", MagicMock()):
+            from detectors.voice_detector import VoiceDetector
+            mock_worker = MagicMock()
+            mock_worker.is_initialized = True
+            detector = VoiceDetector(funasr_worker=mock_worker)
+            return detector
 
     def test_voice_detector_init(self, voice_detector):
         """Test voice detector initialization"""
         assert voice_detector is not None
-        assert voice_detector._model_name == "tiny"
         assert not voice_detector.is_initialized
 
-    def test_voice_detector_language(self, voice_detector):
-        """Test setting voice detector language"""
-        voice_detector.set_language("en")
-        assert voice_detector._language == "en"
+    def test_voice_detector_initialize(self, voice_detector):
+        """Test voice detector initialize() marks ready"""
+        result = voice_detector.initialize()
+        assert result is True
+        assert voice_detector.is_initialized
 
     def test_voice_detector_set_device(self, voice_detector):
         """Test setting audio device"""
