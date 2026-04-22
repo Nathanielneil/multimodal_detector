@@ -83,11 +83,7 @@ class VoiceDetector(BaseDetector):
             self._record_thread.join(timeout=1.0)
             self._record_thread = None
 
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-
+        # Stream is closed by _record_audio's finally block
         if self._funasr_worker is not None:
             self._funasr_worker.send_eos()
 
