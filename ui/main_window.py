@@ -212,6 +212,8 @@ from detectors.base_detector import DetectionResult
 from detectors.voice_detector import VoiceDetector
 from detectors.gesture_detector import GestureDetector
 from workers.gesture_worker import GestureWorker
+from workers.image_worker import ImageWorker
+from workers.funasr_worker import FunASRWorker
 from detectors.image_detector import ImageDetector
 from detectors.touch_detector import TouchDetector
 
@@ -267,9 +269,11 @@ class MainWindow(QMainWindow):
 
         # 检测器实例
         self._voice_detector: Optional[VoiceDetector] = None
+        self._funasr_worker: Optional[FunASRWorker] = None
         self._gesture_detector: Optional[GestureDetector] = None
         self._gesture_worker: Optional[GestureWorker] = None  # 异步手势检测
-        self._image_detector: Optional[ImageDetector] = None
+        self._image_detector: Optional[ImageDetector] = None  # 仅用于绘制（缓存结果）
+        self._image_worker: Optional[ImageWorker] = None      # 异步 YOLO 推理
         self._touch_detector: Optional[TouchDetector] = None
 
         # 检测器初始化状态
@@ -285,6 +289,9 @@ class MainWindow(QMainWindow):
         self._gesture_skip_frames = config.get("gesture.skip_frames", 4)
         self._image_skip_frames = config.get("image.skip_frames", 5)
         logger.debug(f"跳帧设置: gesture={self._gesture_skip_frames}, image={self._image_skip_frames}")
+
+        # 无人机状态更新独立计数器（不受 FPS 计算重置影响）
+        self._drone_status_frame_count = 0
 
         # 各模态置信度
         self._confidences: Dict[str, float] = {
@@ -672,10 +679,6 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self):
         """设置快捷键"""
-        # 空格键: 开始/停止录音
-        shortcut_record = QShortcut(QKeySequence(Qt.Key_Space), self)
-        shortcut_record.activated.connect(self._toggle_recording)
-
         # S 键: 启动/停止摄像头
         shortcut_camera = QShortcut(QKeySequence(Qt.Key_S), self)
         shortcut_camera.activated.connect(self._toggle_camera)
@@ -717,6 +720,24 @@ class MainWindow(QMainWindow):
         btn = self._control_panel.btn_record
         btn.setChecked(not btn.isChecked())
 
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            if self._control_panel.is_modal_enabled("voice"):
+                btn = self._control_panel.btn_record
+                if not btn.isChecked():
+                    btn.setChecked(True)
+                    self._on_record_clicked(True)
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            if self._control_panel.is_modal_enabled("voice"):
+                btn = self._control_panel.btn_record
+                if btn.isChecked():
+                    btn.setChecked(False)
+                    self._on_record_clicked(False)
+        super().keyReleaseEvent(event)
+
     def _toggle_camera(self):
         """切换摄像头状态"""
         if self._camera.is_opened:
@@ -741,7 +762,7 @@ class MainWindow(QMainWindow):
         help_text = """
 <h3>快捷键列表</h3>
 <table style="border-collapse: collapse; width: 100%;">
-<tr><td style="padding: 5px;"><b>空格</b></td><td style="padding: 5px;">开始/停止录音</td></tr>
+<tr><td style="padding: 5px;"><b>空格</b></td><td style="padding: 5px;">按住录音，松开识别（Push-to-Talk）</td></tr>
 <tr><td style="padding: 5px;"><b>S</b></td><td style="padding: 5px;">启动/停止摄像头</td></tr>
 <tr><td style="padding: 5px;"><b>R</b></td><td style="padding: 5px;">重置统计</td></tr>
 <tr><td style="padding: 5px;"><b>E</b></td><td style="padding: 5px;">导出历史</td></tr>
@@ -778,18 +799,32 @@ class MainWindow(QMainWindow):
         current_step = 0
         errors = []
 
-        # 步骤1: 创建语音检测器
+        # 步骤1: 创建 FunASRWorker 和语音检测器
         current_step += 1
-        progress.set_status("正在加载预训练模型...")
+        progress.set_status("正在加载 FunASR 语音模型...")
         progress.set_progress(int(current_step / total_steps * 100))
         progress.set_detail(f"步骤 {current_step}/{total_steps} - 语音识别模块")
-        self._voice_detector = VoiceDetector()  # 从 config 读取参数
+
+        self._funasr_worker = FunASRWorker()
+        self._funasr_worker.detection_ready.connect(self._on_detection_result)
+        self._funasr_worker.error_occurred.connect(self._on_detector_error)
+        self._funasr_worker.status_changed.connect(
+            lambda s: self._control_panel.set_record_status(s)
+        )
+        if not self._funasr_worker.initialize():
+            errors.append("FunASR 模型加载失败")
+        else:
+            self._funasr_worker.start()
+
+        self._voice_detector = VoiceDetector(funasr_worker=self._funasr_worker)
         self._voice_detector.status_changed.connect(
             lambda s: self._control_panel.set_record_status(s)
         )
-        self._voice_detector.detection_ready.connect(self._on_detection_result)
         self._voice_detector.error_occurred.connect(self._on_detector_error)
-        # 延迟连接语音可视化信号（等待 UI 初始化完成）
+        self._voice_detector.initialize()
+        self._voice_detector.audio_chunk.connect(
+            self._funasr_worker.enqueue, Qt.QueuedConnection
+        )
         QTimer.singleShot(100, self._connect_voice_overlay_signals)
 
         # 步骤2: 创建并初始化手势检测器 (异步版本)
@@ -809,7 +844,9 @@ class MainWindow(QMainWindow):
 
         # 异步检测工作线程
         self._gesture_worker = GestureWorker()
-        self._gesture_worker.result_ready.connect(self._on_gesture_worker_result)
+        self._gesture_worker.result_ready.connect(
+            self._on_gesture_worker_result, Qt.QueuedConnection
+        )
         try:
             if self._gesture_worker.initialize():
                 self._gesture_worker.start()
@@ -818,18 +855,26 @@ class MainWindow(QMainWindow):
         except Exception as e:
             errors.append(f"手势工作线程: {str(e)}")
 
-        # 步骤3: 创建并初始化图像检测器
+        # 步骤3: 创建并初始化图像检测器（异步工作线程）
         current_step += 1
         progress.set_progress(int(current_step / total_steps * 100))
         progress.set_detail(f"步骤 {current_step}/{total_steps} - 图像识别模块")
-        self._image_detector = ImageDetector()  # 从 config 读取参数
+
+        # ImageDetector 仅保留绘制功能（draw_detections），推理由 ImageWorker 负责
+        self._image_detector = ImageDetector()
         self._image_detector.detection_ready.connect(self._on_detection_result)
         self._image_detector.error_occurred.connect(self._on_detector_error)
-        try:
-            if not self._image_detector.initialize():
-                errors.append("图像检测器初始化失败")
-        except Exception as e:
-            errors.append(f"图像检测器: {str(e)}")
+
+        # 异步 YOLO 工作线程
+        self._image_worker = ImageWorker()
+        self._image_worker.initialize(
+            model_name=config.get("image.model_name", "yolov8n"),
+            conf_threshold=config.get("image.confidence_threshold", 0.5),
+        )
+        self._image_worker.result_ready.connect(
+            self._on_image_worker_result, Qt.QueuedConnection
+        )
+        self._image_worker.start()
 
         # 步骤4: 完成
         current_step += 1
@@ -927,22 +972,19 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._handle_detection_error("gesture", e)
 
-        # 图像检测 (跳帧优化)
+        # 图像检测 (异步 ImageWorker)
         try:
             if (self._control_panel.is_modal_enabled("image") and
-                    self._image_detector and self._image_detector.is_initialized):
-                # 只在特定帧运行检测
+                    self._image_worker and self._image_worker.isRunning()):
+                # 按跳帧频率提交帧到工作线程（非阻塞）
                 if self._detection_frame_count % (self._image_skip_frames + 1) == 0:
-                    result = self._image_detector.detect(frame)
-                    if result:
-                        self._confidences["image"] = result.confidence
-                        self._video_widget.update_modal_status(
-                            "image", result.command, result.confidence
-                        )
-                # 绘制检测框 (使用缓存的结果)
-                drawn = self._image_detector.draw_detections(processed_frame)
-                if drawn is not None:
-                    processed_frame = drawn
+                    self._image_worker.submit_frame(frame)
+                # 绘制缓存的检测结果（每帧都绘制，不阻塞）
+                if self._image_detector:
+                    cached = self._image_worker.get_cached_detections()
+                    drawn = self._image_detector.draw_detections(processed_frame, cached)
+                    if drawn is not None:
+                        processed_frame = drawn
         except Exception as e:
             self._handle_detection_error("image", e)
 
@@ -962,43 +1004,41 @@ class MainWindow(QMainWindow):
         # 显示处理后的帧
         self._video_widget.display_frame(processed_frame)
 
-        # 更新无人机状态显示 (每5帧更新一次)
-        if self._frame_count % 5 == 0:
+        # 更新无人机状态显示 (每5帧更新一次，使用独立计数器)
+        self._drone_status_frame_count += 1
+        if self._drone_status_frame_count >= 5:
+            self._drone_status_frame_count = 0
             self._update_drone_status_display()
 
     def _draw_stats_overlay(self, frame):
         """
-        在帧上绘制 FPS 和手势信息（使用 PIL 渲染中文）
+        在帧上绘制 FPS 和手势信息
 
-        OSD显示在右上角，减少对主要画面的遮挡
+        手势未启用时走 cv2.putText 快速路径（避免 PIL 全帧转换）。
+        手势启用时使用 PIL 渲染中文文字。
         """
         h, w = frame.shape[:2]
-
-        # 判断是否启用手势模态
         gesture_enabled = self._control_panel.is_modal_enabled("gesture")
 
-        # 计算背景尺寸
         bg_width = 180
-        if gesture_enabled:
-            bg_height = 70  # FPS + 置信度 + 命令
-        else:
-            bg_height = 30  # 仅 FPS
-
-        # 右上角位置
+        bg_height = 70 if gesture_enabled else 30
         x_start = w - bg_width - 10
         y_start = 10
 
-        # 背景半透明矩形（更透明）
+        # 半透明背景
         overlay = frame.copy()
-        cv2.rectangle(
-            overlay,
-            (x_start, y_start),
-            (x_start + bg_width, y_start + bg_height),
-            (0, 0, 0), -1
-        )
+        cv2.rectangle(overlay, (x_start, y_start),
+                      (x_start + bg_width, y_start + bg_height), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
 
-        # 转换为 PIL Image
+        if not gesture_enabled:
+            # 快速路径：仅 FPS，用 cv2.putText（无 PIL 转换）
+            fps_text = f"FPS: {self._fps:.1f}"
+            cv2.putText(frame, fps_text, (x_start + 8, y_start + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            return frame
+
+        # 慢速路径：含中文，使用 PIL
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(frame_rgb)
         draw = ImageDraw.Draw(pil_image)
@@ -1007,28 +1047,21 @@ class MainWindow(QMainWindow):
         y_offset = y_start + 5
         line_height = 20
 
-        # FPS (绿色) - 更紧凑的显示
         fps_text = f"FPS: {self._fps:.1f}"
         draw.text((x_offset, y_offset), fps_text, font=self._font, fill=(0, 255, 0))
         y_offset += line_height
 
-        # 手势模态启用时显示置信度和命令
-        if gesture_enabled:
-            # 置信度 (橙色)
-            gesture_conf = self._confidences.get("gesture", 0.0)
-            conf_text = f"置信度: {gesture_conf:.0%}"
-            draw.text((x_offset, y_offset), conf_text, font=self._font, fill=(255, 165, 0))
-            y_offset += line_height
+        gesture_conf = self._confidences.get("gesture", 0.0)
+        conf_text = f"置信度: {gesture_conf:.0%}"
+        draw.text((x_offset, y_offset), conf_text, font=self._font, fill=(255, 165, 0))
+        y_offset += line_height
 
-            # 当前命令 (青色) - 截断过长的命令
-            if self._current_gesture_command:
-                cmd = self._current_gesture_command
-                if len(cmd) > 8:
-                    cmd = cmd[:7] + "..."
-                cmd_text = f"命令: {cmd}"
-                draw.text((x_offset, y_offset), cmd_text, font=self._font, fill=(0, 255, 255))
+        if self._current_gesture_command:
+            cmd = self._current_gesture_command
+            if len(cmd) > 8:
+                cmd = cmd[:7] + "..."
+            draw.text((x_offset, y_offset), f"命令: {cmd}", font=self._font, fill=(0, 255, 255))
 
-        # 转换回 OpenCV 格式
         frame = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
         return frame
 
@@ -1042,6 +1075,22 @@ class MainWindow(QMainWindow):
     def _on_detector_error(self, error_msg: str):
         """处理检测器错误"""
         self.statusBar().showMessage(f"检测器错误: {error_msg}", 5000)
+
+    @Slot(str, float, object)
+    def _on_image_worker_result(self, command: str, confidence: float, detections):
+        """处理异步图像检测结果"""
+        if command and detections:
+            self._confidences["image"] = confidence
+            self._video_widget.update_modal_status("image", command, confidence)
+
+            from detectors.base_detector import DetectionResult
+            result = DetectionResult(
+                modal_type="image",
+                command=command,
+                confidence=confidence,
+                details={"async": True, "total_count": len(detections)},
+            )
+            self._on_detection_result(result)
 
     @Slot(str, float, object)
     def _on_gesture_worker_result(self, command: str, confidence: float, results):
@@ -1193,48 +1242,20 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _on_record_clicked(self, is_recording: bool):
-        """处理录音按钮点击"""
         if not self._control_panel.is_modal_enabled("voice"):
             self._control_panel.set_record_status("语音模态已禁用")
             return
-
-        if self._voice_detector is None:
-            # 正常情况下不会到这里，因为在初始化时已创建
-            self._voice_detector = VoiceDetector()  # 从 config 读取参数
-            self._voice_detector.status_changed.connect(
-                lambda s: self._control_panel.set_record_status(s)
-            )
-            self._voice_detector.detection_ready.connect(self._on_detection_result)
-            self._voice_detector.error_occurred.connect(self._on_detector_error)
-            self._connect_voice_overlay_signals()
-
-        if not self._voice_detector.is_initialized:
-            self._control_panel.set_record_status("正在加载语音模型...")
-            QApplication.processEvents()
-            if not self._voice_detector.initialize():
-                self._control_panel.set_record_status("语音模型加载失败")
-                return
+        if self._voice_detector is None or not self._voice_detector.is_initialized:
+            self._control_panel.set_record_status("语音模块未就绪")
+            return
 
         if is_recording:
-            # 显示语音叠加层并开始录音
             self._video_widget.show_voice_overlay()
             self._video_widget.voice_overlay.start_recording()
             self._voice_detector.start_recording()
         else:
-            # 停止录音
             self._video_widget.voice_overlay.stop_recording()
-            result = self._voice_detector.stop_recording()
-            if result:
-                self._video_widget.update_modal_status(
-                    "voice", result.command, result.confidence
-                )
-                # 更新叠加层结果
-                command_text = self._get_voice_command_text(result.command)
-                self._video_widget.voice_overlay.set_result(
-                    result.command, result.confidence, command_text
-                )
-            else:
-                self._video_widget.voice_overlay.set_idle()
+            self._voice_detector.stop_recording()
 
     def _connect_voice_overlay_signals(self):
         """连接语音检测器与可视化叠加层的信号"""
@@ -1246,6 +1267,13 @@ class MainWindow(QMainWindow):
             self._voice_detector.volume_changed.connect(
                 overlay.update_volume, Qt.QueuedConnection
             )
+
+            # 连接 FunASR 中间结果 → overlay 实时字幕
+            if self._funasr_worker:
+                self._funasr_worker.partial_result_ready.connect(
+                    lambda text: overlay.set_result(text, 0.0, ""),
+                    Qt.QueuedConnection,
+                )
 
             # 连接错误信号
             self._voice_detector.error_occurred.connect(
@@ -1363,7 +1391,14 @@ class MainWindow(QMainWindow):
                     self._ros_bridge.publish_formation(formation, drone_count=6)
 
         elif result.modal_type == "voice":
-            # 语音指令 -> 解析并发送
+            command_text = self._get_voice_command_text(result.command)
+            if hasattr(self._video_widget, "voice_overlay"):
+                self._video_widget.update_modal_status(
+                    "voice", result.command, result.confidence
+                )
+                self._video_widget.voice_overlay.set_result(
+                    result.command, result.confidence, command_text
+                )
             self._process_voice_command(result.command)
 
     def _process_voice_command(self, text: str):
@@ -1449,10 +1484,15 @@ class MainWindow(QMainWindow):
         # 停止异步工作线程
         if self._gesture_worker:
             self._gesture_worker.stop()
+        if self._image_worker:
+            self._image_worker.stop()
 
         # 释放检测器
         if self._voice_detector:
             self._voice_detector.release()
+        if self._funasr_worker:
+            self._funasr_worker.release()
+            self._funasr_worker.wait(2000)
         if self._gesture_detector:
             self._gesture_detector.release()
         if self._image_detector:
