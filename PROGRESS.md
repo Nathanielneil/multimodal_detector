@@ -1050,3 +1050,98 @@ drone.step_dynamics(dt, external_accel)
 | v2.4 | 2025-12-18 | 场景扩大与边界围栏，详见上方 |
 | v2.5 | 2025-12-18 | 轨迹历史显示，详见上方 |
 | v2.6 | 2025-12-18 | **L1 基础动力学模型 (Sim2Real)**，详见上方 |
+| v2.13 | 2026-04-22 | **FunASR 流式语音识别迁移**，详见下方 |
+
+---
+
+## [2026-04-22 T21] FunASR 流式语音识别迁移 (v2.13)
+
+### 背景
+
+原语音识别使用 OpenAI Whisper，采用"录完再识别"模式，延迟高（需等待录音结束后才开始推理），且不支持实时字幕显示。迁移至阿里开源的 FunASR Paraformer-zh-streaming，实现逐块流式推理。
+
+### 核心变更
+
+#### 1. 语音识别引擎替换
+
+| 项目 | 旧版 | 新版 |
+|------|------|------|
+| 引擎 | OpenAI Whisper | FunASR Paraformer-zh-streaming |
+| 推理模式 | 录完再识别 | 逐块流式（每 ~450ms 输出中间结果） |
+| 中文训练数据 | 通用多语言 | 60000 小时普通话专项训练 |
+| 触发方式 | 点击切换 | Push-to-Talk（按住说话，松开识别） |
+| 实时字幕 | 无 | 有（中间结果实时显示在 voice_overlay） |
+
+#### 2. 架构重构
+
+新增 `workers/funasr_worker.py`，将推理逻辑从 VoiceDetector 中分离：
+
+```
+main_window.py
+    │  keyPressEvent(Space) → start_recording()
+    │  keyReleaseEvent(Space) → stop_recording()
+    ▼
+VoiceDetector（薄录音层）
+    │  audio_chunk(np.ndarray) 信号 → FunASRWorker 队列
+    │  volume_changed(float) 信号 → overlay 波形
+    ▼
+FunASRWorker(QThread)
+    │  重采样 48kHz → 16kHz，缓冲至 ~450ms
+    │  model.generate(input, cache, is_final, chunk_size=[0,10,5])
+    │  partial_result_ready(str) → voice_overlay 实时字幕
+    │  detection_ready(DetectionResult) → main_window 指令解析
+    ▼
+FunASR Paraformer-zh-streaming
+```
+
+#### 3. 关键设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 架构方案 | 独立 FunASRWorker QThread | 与 GestureWorker 模式一致，职责清晰 |
+| EOS 哨兵 | `None` | 触发最终推理 |
+| STOP 哨兵 | `_STOP = object()` | 退出 run() 循环，与 EOS 区分 |
+| 队列保护 | threading.Lock + 最大 20 块 | 防止 CPU 推理时积压，EOS/STOP 永不丢弃 |
+| 录音期间才推理 | `_accepting` 标志 | 非录音时不入队，彻底消除空闲积压 |
+| 流式字幕连接 | `partial_result_ready → overlay.set_result(text, 0.0, "")` | 复用现有 overlay 接口 |
+
+#### 4. Push-to-Talk 实现
+
+- 移除原 `QShortcut(Space)` 切换模式
+- 新增 `keyPressEvent` / `keyReleaseEvent`，均检查 `isAutoRepeat()` 防重入
+- UI 按钮同样支持 `pressed` / `released` 信号
+
+### 新增/修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `workers/funasr_worker.py` | 新增 — FunASRWorker QThread |
+| `detectors/voice_detector.py` | 重构 — 移除 Whisper，新增 audio_chunk 信号 |
+| `ui/main_window.py` | 修改 — Push-to-Talk、信号连接、异步结果处理 |
+| `requirements.txt` | 修改 — openai-whisper → funasr>=1.0.0 |
+| `tests/test_funasr_worker.py` | 新增 — 7 个单元测试 |
+| `tests/test_voice_detector_funasr.py` | 新增 — 4 个单元测试 |
+| `tests/test_detectors.py` | 修改 — 更新旧 Whisper 测试 |
+
+### 依赖安装
+
+```bash
+pip install funasr torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128
+# 首次运行自动下载模型到 ~/.cache/modelscope/
+```
+
+### 已完成功能 (v2.13)
+
+- [x] FunASR Paraformer-zh-streaming 流式推理
+- [x] Push-to-Talk 录音模式（Space 键按住/松开）
+- [x] 实时字幕显示（中间结果 → voice_overlay）
+- [x] 48kHz → 16kHz 重采样
+- [x] 队列积压保护（录音期间才处理音频）
+- [x] 线程安全队列（Lock + EOS/STOP 哨兵区分）
+- [x] 无结果时 overlay 自动重置为 idle 状态
+- [x] 全量测试通过（63/63）
+
+### 待办事项 (v2.13)
+
+- [ ] GPU 推理（当前环境 CUDA 初始化异常，暂用 CPU）
+- [ ] VAD 自动检测静音结束录音（替代手动松键）
