@@ -149,8 +149,11 @@ class FunASRWorker(QThread):
                 self._cache = {}
                 buf = np.array([], dtype=np.float32)
 
+        # Clean up model after thread exits cleanly
+        self._model = None
+
     def release(self):
         self._is_initialized = False
         self._queue.put(_STOP)   # exits run() loop without triggering inference
-        self._model = None
+        # self._model is cleaned up by run() after _STOP is processed
         self.status_changed.emit("FunASRWorker 已释放")

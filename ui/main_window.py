@@ -711,15 +711,6 @@ class MainWindow(QMainWindow):
         # 更新窗口标题提示
         self.statusBar().showMessage("按 F1 查看快捷键帮助", 5000)
 
-    def _toggle_recording(self):
-        """切换录音状态"""
-        if not self._control_panel.is_modal_enabled("voice"):
-            self.statusBar().showMessage("语音模态已禁用，请先启用", 2000)
-            return
-        # 切换录音按钮状态
-        btn = self._control_panel.btn_record
-        btn.setChecked(not btn.isChecked())
-
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key_Space and not event.isAutoRepeat():
             if self._control_panel.is_modal_enabled("voice"):
@@ -806,10 +797,15 @@ class MainWindow(QMainWindow):
         progress.set_detail(f"步骤 {current_step}/{total_steps} - 语音识别模块")
 
         self._funasr_worker = FunASRWorker()
-        self._funasr_worker.detection_ready.connect(self._on_detection_result)
-        self._funasr_worker.error_occurred.connect(self._on_detector_error)
+        self._funasr_worker.detection_ready.connect(
+            self._on_detection_result, Qt.QueuedConnection
+        )
+        self._funasr_worker.error_occurred.connect(
+            self._on_detector_error, Qt.QueuedConnection
+        )
         self._funasr_worker.status_changed.connect(
-            lambda s: self._control_panel.set_record_status(s)
+            lambda s: self._control_panel.set_record_status(s),
+            Qt.QueuedConnection,
         )
         if not self._funasr_worker.initialize():
             errors.append("FunASR 模型加载失败")
@@ -1272,6 +1268,11 @@ class MainWindow(QMainWindow):
             if self._funasr_worker:
                 self._funasr_worker.partial_result_ready.connect(
                     lambda text: overlay.set_result(text, 0.0, ""),
+                    Qt.QueuedConnection,
+                )
+                # 未识别到语音时重置 overlay
+                self._funasr_worker.status_changed.connect(
+                    lambda s: overlay.set_idle() if s == "未识别到语音" else None,
                     Qt.QueuedConnection,
                 )
 
