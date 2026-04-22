@@ -248,6 +248,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._setup_shortcuts()
         self._init_detectors()
+        QTimer.singleShot(500, self._init_heavy_detectors)
 
     def _setup_window(self):
         """设置窗口属性"""
