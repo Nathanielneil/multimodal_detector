@@ -214,6 +214,7 @@ from detectors.gesture_detector import GestureDetector
 from workers.gesture_worker import GestureWorker
 from workers.image_worker import ImageWorker
 from workers.funasr_worker import FunASRWorker
+from workers.sensevoice_worker import SenseVoiceWorker
 from detectors.image_detector import ImageDetector
 from detectors.touch_detector import TouchDetector
 
@@ -223,6 +224,9 @@ try:
     _ros_available = True
 except ImportError:
     _ros_available = False
+    # Fallback 到 3D 可视化的内部枚举
+    SwarmCommand = ViewSwarmCommand
+    FormationType = ViewFormationType
 
 
 class MainWindow(QMainWindow):
@@ -340,28 +344,9 @@ class MainWindow(QMainWindow):
         self._max_errors_before_disable = 10  # 连续错误次数阈值
         self._error_cooldown: Dict[str, float] = {}  # 错误冷却时间
 
-        # 中文字体 (使用系统字体)
-        self._font = None
-        try:
-            # 尝试加载常见的中文字体
-            font_paths = [
-                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-            ]
-            for path in font_paths:
-                try:
-                    self._font = ImageFont.truetype(path, 18)
-                    break
-                except OSError:
-                    # Font file not found or cannot be loaded
-                    continue
-            if self._font is None:
-                self._font = ImageFont.load_default()
-        except Exception:
-            # Fallback to default font on any unexpected error
-            self._font = ImageFont.load_default()
+        # 中文字体 (跨平台查找)
+        from utils.font_utils import find_cjk_font
+        self._font = find_cjk_font(size=18)
 
     def _create_drone_status_panel(self) -> QWidget:
         """创建无人机状态监控面板（竖向排列，可展开卡片）"""
@@ -791,13 +776,19 @@ class MainWindow(QMainWindow):
         current_step = 0
         errors = []
 
-        # 步骤1: 创建 FunASRWorker 和语音检测器
+        # 步骤1: 创建语音识别 Worker（可通过配置切换引擎）
         current_step += 1
-        progress.set_status("正在加载 FunASR 语音模型...")
-        progress.set_progress(int(current_step / total_steps * 100))
-        progress.set_detail(f"步骤 {current_step}/{total_steps} - 语音识别模块")
-
-        self._funasr_worker = FunASRWorker()
+        asr_engine = config.get("voice.asr_engine", "sensevoice")  # sensevoice | funasr
+        if asr_engine == "funasr":
+            progress.set_status("正在加载语音模型...")
+            progress.set_progress(int(current_step / total_steps * 100))
+            progress.set_detail(f"步骤 {current_step}/{total_steps} - 语音识别模块")
+            self._funasr_worker = FunASRWorker()
+        else:
+            progress.set_status("正在加载语音模型...")
+            progress.set_progress(int(current_step / total_steps * 100))
+            progress.set_detail(f"步骤 {current_step}/{total_steps} - 语音识别模块")
+            self._funasr_worker = SenseVoiceWorker()
         self._funasr_worker.detection_ready.connect(
             self._on_detection_result, Qt.QueuedConnection
         )

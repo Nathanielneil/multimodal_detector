@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFrame, QPushButton, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QSize
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QImage, QPixmap, QMouseEvent
 
 from .styles import MODAL_COLORS
@@ -142,7 +142,7 @@ class VideoWidget(QWidget):
         """初始化UI - 简化版，仅包含视频和按钮"""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(4)
 
         # 视频显示区域
         self._video_label = QLabel()
@@ -163,6 +163,14 @@ class VideoWidget(QWidget):
         self._video_label.mouseReleaseEvent = self._on_mouse_release
 
         main_layout.addWidget(self._video_label, 1)
+
+        # 语音叠加层占位（默认隐藏，录音时展开）
+        self._voice_overlay_placeholder = QWidget()
+        self._voice_overlay_placeholder.setVisible(False)
+        self._voice_overlay_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        overlay_layout = QVBoxLayout(self._voice_overlay_placeholder)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self._voice_overlay_placeholder)
 
         # 控制按钮区域
         btn_layout = QHBoxLayout()
@@ -256,33 +264,9 @@ class VideoWidget(QWidget):
         pil_image = Image.fromarray(placeholder_rgb)
         draw = ImageDraw.Draw(pil_image)
 
-        # 尝试加载中文字体
-        font = None
-        font_paths = [
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        ]
-        for path in font_paths:
-            try:
-                font = ImageFont.truetype(path, 24)
-                break
-            except OSError:
-                # Font file not found or cannot be loaded
-                continue
-        if font is None:
-            font = ImageFont.load_default()
-
-        small_font = None
-        for path in font_paths:
-            try:
-                small_font = ImageFont.truetype(path, 14)
-                break
-            except OSError:
-                # Font file not found or cannot be loaded
-                continue
-        if small_font is None:
-            small_font = ImageFont.load_default()
+        from utils.font_utils import find_cjk_font
+        font = find_cjk_font(24)
+        small_font = find_cjk_font(14)
 
         # 绘制主文字
         main_text = "摄像头已停止"
@@ -332,37 +316,20 @@ class VideoWidget(QWidget):
         return (self._video_label.width(), self._video_label.height())
 
     def _setup_voice_overlay(self):
-        """设置语音识别可视化叠加层"""
-        # 创建叠加层，父组件设为 video_label
-        self._voice_overlay = VoiceOverlayWidget(self._video_label)
-        self._voice_overlay.hide()  # 初始隐藏
+        """将语音叠加层放入布局占位容器，不遮挡视频。"""
+        self._voice_overlay = VoiceOverlayWidget(self._voice_overlay_placeholder)
+        self._voice_overlay_placeholder.layout().addWidget(self._voice_overlay)
+        self._voice_overlay.hide()
 
     def resizeEvent(self, event):
-        """处理窗口大小变化，更新叠加层位置"""
         super().resizeEvent(event)
-        # 延迟更新位置，确保布局完成
-        QTimer.singleShot(10, self._update_voice_overlay_position)
 
     def showEvent(self, event):
-        """显示时更新叠加层位置"""
         super().showEvent(event)
-        QTimer.singleShot(50, self._update_voice_overlay_position)
 
     def _update_voice_overlay_position(self):
-        """更新语音叠加层位置 (底部对齐)"""
-        if hasattr(self, '_voice_overlay') and self._voice_overlay:
-            # 获取视频标签的实际大小
-            label_width = self._video_label.width()
-            label_height = self._video_label.height()
-            overlay_height = 100  # 叠加层固定高度 (霓虹波形 55 + 信息栏 45)
-
-            # 定位到视频区域底部
-            self._voice_overlay.setGeometry(
-                0,
-                label_height - overlay_height,
-                label_width,
-                overlay_height
-            )
+        """占位容器方案下无需手动定位。"""
+        pass
 
     @property
     def voice_overlay(self) -> VoiceOverlayWidget:
@@ -370,11 +337,11 @@ class VideoWidget(QWidget):
         return self._voice_overlay
 
     def show_voice_overlay(self):
-        """显示语音叠加层"""
-        self._update_voice_overlay_position()
+        """显示语音叠加层（在视频下方展开，不遮挡画面）。"""
         self._voice_overlay.show()
-        self._voice_overlay.raise_()  # 确保在最上层
+        self._voice_overlay_placeholder.setVisible(True)
 
     def hide_voice_overlay(self):
-        """隐藏语音叠加层"""
+        """隐藏语音叠加层。"""
         self._voice_overlay.hide()
+        self._voice_overlay_placeholder.setVisible(False)

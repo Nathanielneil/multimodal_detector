@@ -3,10 +3,21 @@
 使用 OpenCV VideoCapture 进行摄像头操作
 """
 
+import sys
 import cv2
 import numpy as np
 from PySide6.QtCore import QObject, Signal, QMutex, QMutexLocker
 from typing import Optional, Tuple, List
+
+
+def _open_capture(camera_id: int) -> cv2.VideoCapture:
+    """在 macOS 上优先使用 AVFoundation backend，其他平台使用默认 backend。"""
+    if sys.platform == "darwin":
+        cap = cv2.VideoCapture(camera_id, cv2.CAP_AVFOUNDATION)
+        if cap.isOpened():
+            return cap
+        cap.release()
+    return cv2.VideoCapture(camera_id)
 
 
 class CameraWorker(QObject):
@@ -75,7 +86,7 @@ class CameraWorker(QObject):
                 self._capture.release()
 
             # 尝试打开摄像头
-            self._capture = cv2.VideoCapture(self._camera_id)
+            self._capture = _open_capture(self._camera_id)
 
             if not self._capture.isOpened():
                 self.error_occurred.emit(
@@ -201,7 +212,7 @@ class CameraWorker(QObject):
         """
         available: List[int] = []
         for i in range(max_cameras):
-            cap = cv2.VideoCapture(i)
+            cap = _open_capture(i)
             if cap.isOpened():
                 available.append(i)
                 cap.release()

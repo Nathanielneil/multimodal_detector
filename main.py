@@ -4,24 +4,27 @@
 多模态检测器 - 主入口文件
 
 一个基于 PySide6 + OpenCV 的桌面应用，集成了:
-- 语音识别 (OpenAI Whisper)
+- 语音识别 (FunASR Paraformer-zh-streaming)
 - 手势识别 (MediaPipe Hands)
 - 图像识别 (YOLOv8)
 - 触屏指令检测
 
 运行环境:
-- Ubuntu 20.04+
+- macOS 12+ / Ubuntu 20.04+ / Windows 10+
 - Python 3.10
-- CUDA 11.8 (可选，用于 GPU 加速)
+- CUDA / MPS / CPU 自动选择（无 GPU 时自动退回 CPU）
 
 依赖安装:
+    # macOS
+    pip install torch torchvision torchaudio
+    pip install -r requirements-macos.txt
+
+    # Linux (CUDA)
     conda env create -f environment.yml
     conda activate multimodal
 
 运行:
     python main.py
-
-作者: Claude Code
 """
 
 import sys
@@ -78,8 +81,9 @@ def main():
 
     logger.info(f"Application: {app_name} v{app_version}")
 
-    # 设置默认字体
-    font = QFont("Microsoft YaHei", 10)
+    # 设置默认字体（跨平台查找可用中文字体）
+    from utils.font_utils import find_qt_font_family
+    font = QFont(find_qt_font_family(), 10)
     font.setStyleHint(QFont.SansSerif)
     app.setFont(font)
 

@@ -357,7 +357,7 @@ class VoiceOverlayWidget(QWidget):
 
     def _init_ui(self):
         """初始化界面"""
-        self.setFixedHeight(100)
+        self.setFixedHeight(115)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -370,7 +370,7 @@ class VoiceOverlayWidget(QWidget):
         # 信息栏
         info_widget = QWidget()
         info_widget.setStyleSheet("background-color: rgba(10, 12, 18, 240);")
-        info_widget.setFixedHeight(45)
+        info_widget.setFixedHeight(55)
 
         info_layout = QHBoxLayout(info_widget)
         info_layout.setContentsMargins(15, 5, 15, 5)
@@ -444,9 +444,10 @@ class VoiceOverlayWidget(QWidget):
             color: #00FF88;
             font-size: 13px;
             font-weight: bold;
-            font-family: 'Consolas', monospace;
         """)
-        self._result_label.setAlignment(Qt.AlignRight)
+        self._result_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._result_label.setWordWrap(True)
+        self._result_label.setMinimumWidth(180)
         result_layout.addWidget(self._result_label)
 
         self._command_label = QLabel("")
@@ -555,8 +556,9 @@ class VoiceOverlayWidget(QWidget):
         """)
         self._indicator.setStyleSheet("color: #00FF88; font-size: 20px;")
 
-        display_text = text if len(text) <= 12 else text[:10] + ".."
-        self._result_label.setText(f'"{display_text}" {int(confidence*100)}%')
+        display_text = text if len(text) <= 20 else text[:18] + ".."
+        conf_str = f" {int(confidence*100)}%" if confidence > 0 else ""
+        self._result_label.setText(f'"{display_text}"{conf_str}')
 
         if command:
             self._command_label.setText(f"→ {command}")

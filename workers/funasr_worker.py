@@ -7,18 +7,29 @@ import time
 import numpy as np
 from typing import Optional
 from PySide6.QtCore import QThread, Signal, QObject
-from scipy import signal as scipy_signal
 from utils.logger import get_logger
 from detectors.base_detector import DetectionResult
 
 logger = get_logger(__name__)
 
-_STOP = object()   # sentinel to exit run() loop — distinct from EOS (None)
+_STOP = object()
 
-_DEVICE_RATE = 48000
 _MODEL_RATE = 16000
 _CHUNK_SAMPLES = 7200   # ~450ms @ 16kHz
 _QUEUE_MAX = 20
+
+
+def _resample(data: np.ndarray, src_rate: int, dst_rate: int = _MODEL_RATE) -> np.ndarray:
+    """高质量重采样，优先使用 soxr，回退到 scipy。"""
+    if src_rate == dst_rate:
+        return data
+    try:
+        import soxr
+        return soxr.resample(data, src_rate, dst_rate, quality="HQ").astype(np.float32)
+    except ImportError:
+        from scipy import signal as scipy_signal
+        n_out = int(len(data) * dst_rate / src_rate)
+        return scipy_signal.resample(data, n_out).astype(np.float32)
 
 
 class FunASRWorker(QThread):
@@ -31,26 +42,41 @@ class FunASRWorker(QThread):
         super().__init__(parent)
         self._model = None
         self._is_initialized = False
-        self._accepting = False   # only True between start_session/send_eos
+        self._accepting = False
         self._queue: queue.Queue = queue.Queue()
         self._queue_lock = threading.Lock()
         self._cache: dict = {}
+        self._device_rate: int = 48000  # updated by VoiceDetector before recording
 
     @property
     def is_initialized(self) -> bool:
         return self._is_initialized
 
+    @staticmethod
+    def _select_device() -> str:
+        """按 CUDA → MPS → CPU 优先级选择推理设备。"""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+            if torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+
     def initialize(self) -> bool:
         try:
-            self.status_changed.emit("正在加载 FunASR 模型...")
+            self.status_changed.emit("正在加载语音模型...")
             from funasr import AutoModel as _AutoModel
+            device = self._select_device()
             self._model = _AutoModel(
                 model="paraformer-zh-streaming",
                 disable_update=True,
-                device="cuda",
+                device=device,
             )
             self._is_initialized = True
-            self.status_changed.emit("FunASR 模型加载完成")
+            self.status_changed.emit("语音模型加载完成")
             return True
         except Exception as e:
             self.error_occurred.emit(f"FunASR 模型加载失败: {e}")
@@ -89,6 +115,10 @@ class FunASRWorker(QThread):
         with self._queue_lock:
             self._queue.put(None)
 
+    def set_device_rate(self, rate: int):
+        """录音前由 VoiceDetector 调用，告知实际设备采样率。"""
+        self._device_rate = rate
+
     def start_session(self):
         """Allow audio chunks to be enqueued (call before start_recording)."""
         self._accepting = True
@@ -108,9 +138,7 @@ class FunASRWorker(QThread):
             final_emitted = False
 
             if not is_final:
-                # Resample device rate (48kHz) → model rate (16kHz)
-                n_out = int(len(item) * _MODEL_RATE / _DEVICE_RATE)
-                chunk_16k = scipy_signal.resample(item, n_out).astype(np.float32)
+                chunk_16k = _resample(item, self._device_rate)
                 buf = np.concatenate([buf, chunk_16k])
 
             while len(buf) >= _CHUNK_SAMPLES or (is_final and len(buf) > 0):

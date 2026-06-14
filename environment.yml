@@ -1,4 +1,8 @@
 # Conda environment configuration for multimodal detector
+# NOTE: This file targets Linux + CUDA environments.
+#       For macOS, use requirements-macos.txt instead:
+#           pip install torch torchvision torchaudio
+#           pip install -r requirements-macos.txt
 # Usage: conda env create -f environment.yml
 #        conda activate multimodal
 name: multimodal

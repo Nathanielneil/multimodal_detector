@@ -71,6 +71,13 @@ class VoiceDetector(BaseDetector):
         if self._funasr_worker is not None:
             self._funasr_worker.start_session()
 
+        device_to_use = self._audio_device
+        self._device_sample_rate = self._get_device_sample_rate(device_to_use)
+
+        # 告知 FunASRWorker 实际设备采样率，确保重采样正确
+        if self._funasr_worker is not None and hasattr(self._funasr_worker, 'set_device_rate'):
+            self._funasr_worker.set_device_rate(self._device_sample_rate)
+
         self._record_thread = threading.Thread(target=self._record_audio, daemon=True)
         self._record_thread.start()
 
@@ -123,7 +130,7 @@ class VoiceDetector(BaseDetector):
                 self.volume_changed.emit(volume)
 
             device_to_use = self._audio_device
-            self._device_sample_rate = self._get_device_sample_rate(device_to_use)
+            # 采样率已在 start_recording 中确定，直接复用
             try:
                 self._stream = sounddevice.InputStream(
                     device=device_to_use,
@@ -137,6 +144,8 @@ class VoiceDetector(BaseDetector):
                 self.status_changed.emit(f"设备 {device_to_use} 不可用，使用默认设备")
                 self._audio_device = None
                 self._device_sample_rate = self._get_device_sample_rate(None)
+                if self._funasr_worker is not None and hasattr(self._funasr_worker, 'set_device_rate'):
+                    self._funasr_worker.set_device_rate(self._device_sample_rate)
                 self._stream = sounddevice.InputStream(
                     device=None,
                     samplerate=self._device_sample_rate,

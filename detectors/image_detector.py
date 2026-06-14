@@ -199,50 +199,65 @@ class ImageDetector(BaseDetector):
         color_idx = hash(class_name) % len(self.CLASS_COLORS)
         return self.CLASS_COLORS[color_idx]
 
-    def draw_detections(self, frame: np.ndarray) -> np.ndarray:
+    def draw_detections(self, frame: np.ndarray,
+                        detections: Optional[List[Dict]] = None) -> np.ndarray:
         """
-        在图像上绘制检测结果
+        在图像上绘制检测结果。
 
         Args:
             frame: BGR 格式的图像帧
+            detections: 外部传入的检测结果列表（来自 ImageWorker 缓存）。
+                        为 None 时使用检测器自身的 _last_detections。
 
         Returns:
             绘制了边界框的图像帧
         """
         _lazy_import()
 
-        for det in self._last_detections:
-            # 根据类别获取颜色
-            color = self._get_color_for_class(det.label)
+        # 支持两种来源：外部缓存（dict list）或本地 BoundingBox list
+        if detections is not None:
+            draw_list = detections
+            use_dict = True
+        else:
+            draw_list = self._last_detections
+            use_dict = False
+
+        for det in draw_list:
+            if use_dict:
+                x1, y1, x2, y2 = det["bbox"]
+                label = det["label"]
+                conf = det["confidence"]
+            else:
+                x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
+                label = det.label
+                conf = det.confidence
+
+            color = self._get_color_for_class(label)
 
             # 绘制边界框
-            cv2.rectangle(frame, (det.x1, det.y1), (det.x2, det.y2), color, 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
             # 绘制角点装饰
-            corner_len = min(20, (det.x2 - det.x1) // 4, (det.y2 - det.y1) // 4)
-            # 左上角
-            cv2.line(frame, (det.x1, det.y1), (det.x1 + corner_len, det.y1), color, 3)
-            cv2.line(frame, (det.x1, det.y1), (det.x1, det.y1 + corner_len), color, 3)
-            # 右上角
-            cv2.line(frame, (det.x2, det.y1), (det.x2 - corner_len, det.y1), color, 3)
-            cv2.line(frame, (det.x2, det.y1), (det.x2, det.y1 + corner_len), color, 3)
-            # 左下角
-            cv2.line(frame, (det.x1, det.y2), (det.x1 + corner_len, det.y2), color, 3)
-            cv2.line(frame, (det.x1, det.y2), (det.x1, det.y2 - corner_len), color, 3)
-            # 右下角
-            cv2.line(frame, (det.x2, det.y2), (det.x2 - corner_len, det.y2), color, 3)
-            cv2.line(frame, (det.x2, det.y2), (det.x2, det.y2 - corner_len), color, 3)
+            corner_len = min(20, (x2 - x1) // 4, (y2 - y1) // 4)
+            cv2.line(frame, (x1, y1), (x1 + corner_len, y1), color, 3)
+            cv2.line(frame, (x1, y1), (x1, y1 + corner_len), color, 3)
+            cv2.line(frame, (x2, y1), (x2 - corner_len, y1), color, 3)
+            cv2.line(frame, (x2, y1), (x2, y1 + corner_len), color, 3)
+            cv2.line(frame, (x1, y2), (x1 + corner_len, y2), color, 3)
+            cv2.line(frame, (x1, y2), (x1, y2 - corner_len), color, 3)
+            cv2.line(frame, (x2, y2), (x2 - corner_len, y2), color, 3)
+            cv2.line(frame, (x2, y2), (x2, y2 - corner_len), color, 3)
 
             # 绘制标签
-            label_text = f"{det.label}: {det.confidence:.2f}"
+            label_text = f"{label}: {conf:.2f}"
             label_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
 
             # 标签背景 (半透明效果)
             overlay = frame.copy()
             cv2.rectangle(
                 overlay,
-                (det.x1, det.y1 - label_size[1] - 10),
-                (det.x1 + label_size[0] + 10, det.y1),
+                (x1, y1 - label_size[1] - 10),
+                (x1 + label_size[0] + 10, y1),
                 color,
                 -1
             )
@@ -252,7 +267,7 @@ class ImageDetector(BaseDetector):
             cv2.putText(
                 frame,
                 label_text,
-                (det.x1 + 5, det.y1 - 5),
+                (x1 + 5, y1 - 5),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (255, 255, 255),

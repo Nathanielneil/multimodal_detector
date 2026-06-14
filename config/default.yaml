@@ -33,11 +33,13 @@ camera:
 # =============================================================================
 voice:
   enabled: true
+  # ASR 引擎选择: sensevoice（推荐，~250MB，快）| funasr（~1.5GB，精度更高）
+  asr_engine: "sensevoice"
   model_name: "small"  # tiny, base, small, medium, large
   language: "zh"
   sample_rate: 16000
   # Audio device settings
-  audio_device: null  # null for default, or device ID (e.g., 7)
+  audio_device: 0    # AirPods Pro (24000Hz)
   # Confidence threshold (0.0-1.0)
   threshold: 0.0  # Whisper has built-in filtering
 
@@ -97,7 +99,7 @@ visualization:
 # ROS Bridge Settings
 # =============================================================================
 ros:
-  enabled: true
+  enabled: false
   node_name: "multimodal_detector"
   # Topics
   topics:

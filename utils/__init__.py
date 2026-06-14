@@ -9,5 +9,6 @@ Modules:
 """
 
 from .logger import get_logger, setup_logging
+from .font_utils import find_cjk_font, find_qt_font_family
 
-__all__ = ["get_logger", "setup_logging"]
+__all__ = ["get_logger", "setup_logging", "find_cjk_font", "find_qt_font_family"]

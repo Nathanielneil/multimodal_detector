@@ -342,37 +342,11 @@ class TouchDetector(BaseDetector):
         return ShapeType.NONE
 
     def _load_font(self) -> Any:
-        """
-        加载中文字体用于文字渲染
-
-        按优先级尝试加载系统中文字体:
-        1. 文泉驿正黑 (wqy-zenhei)
-        2. 文泉驿微米黑 (wqy-microhei)
-        3. Noto Sans CJK
-        4. Droid Sans Fallback
-        5. PIL 默认字体 (fallback)
-
-        Returns:
-            ImageFont: PIL 字体对象
-        """
+        """加载中文字体，跨平台查找可用字体文件。"""
         if self._font is not None:
             return self._font
-
-        _lazy_import()
-        font_paths = [
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        ]
-        for path in font_paths:
-            try:
-                self._font = ImageFont.truetype(path, 24)
-                return self._font
-            except OSError:
-                # Font file not found or cannot be loaded
-                continue
-        self._font = ImageFont.load_default()
+        from utils.font_utils import find_cjk_font
+        self._font = find_cjk_font(size=24)
         return self._font
 
     def draw_touch_overlay(self, frame: np.ndarray) -> np.ndarray:
