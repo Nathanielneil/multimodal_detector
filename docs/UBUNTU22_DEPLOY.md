@@ -47,6 +47,12 @@ python -m pip install --upgrade pip wheel
 python -m pip install -r requirements.txt
 ```
 
+如果已经安装过较新的 MediaPipe/OpenCV，先执行下面的一行兼容性修复：
+
+```bash
+python -m pip install --force-reinstall "numpy>=1.24,<2" "opencv-python>=4.8,<5" "mediapipe==0.10.9"
+```
+
 ### NVIDIA GPU 版本（可选）
 
 先确认 NVIDIA 驱动可用：
