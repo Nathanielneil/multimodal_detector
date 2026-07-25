@@ -53,10 +53,36 @@ if config.get("proxy.enabled", False):
         logger.debug(f"HTTPS proxy set to: {https_proxy}")
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QLibraryInfo
 from PySide6.QtGui import QFont
 
 from ui.main_window import MainWindow
+
+
+def _configure_qt_plugin_path() -> None:
+    """Prefer PySide6's platform plugins over OpenCV's bundled Qt plugins.
+
+    ``opencv-python`` ships its own Qt plugin directory.  On Linux, importing
+    cv2 before creating QApplication can make Qt select that directory and
+    fail to load the xcb plugin (especially when libxcb-cursor is present only
+    for the PySide6 runtime).  The application renders through Qt/PySide6, so
+    its plugin directory is the correct one to use.
+    """
+    try:
+        try:
+            plugin_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
+        except AttributeError:  # PySide6 compatibility with older Qt 6 builds
+            plugin_path = QLibraryInfo.location(QLibraryInfo.PluginsPath)
+        if plugin_path:
+            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = plugin_path
+            logger.debug("Using PySide6 Qt plugins: %s", plugin_path)
+    except Exception as exc:  # pragma: no cover - defensive startup fallback
+        logger.debug("Could not configure Qt plugin path: %s", exc)
+
+
+# MainWindow imports cv2/pyqtgraph.  Reset the plugin path after those imports
+# and before QApplication is constructed.
+_configure_qt_plugin_path()
 
 
 def main():

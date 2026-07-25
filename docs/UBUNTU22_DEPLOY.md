@@ -150,7 +150,19 @@ voice:
 
 ### Qt 启动时报 XCB/OpenGL 错误
 
-确认第 2 步中的 Qt/XCB 和 OpenGL 系统库已安装。远程无桌面环境只适合做导入检查，完整界面需要可用的 X11/Wayland 显示会话。
+确认第 2 步中的 Qt/XCB 和 OpenGL 系统库已安装。若日志明确提示
+`libxcb-cursor0`，补装下面这组库后重新启动：
+
+```bash
+sudo apt update
+sudo apt install -y \
+  libxcb-cursor0 libxcb-xinerama0 libxkbcommon-x11-0 \
+  libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+  libxcb-render-util0 libxcb-randr0 libxcb-shape0 \
+  libxcb-xkb1 libxcb-sync1 libegl1
+```
+
+程序启动时会优先使用 PySide6 的 Qt 插件，避免 OpenCV 自带插件与 Qt 冲突。远程无桌面环境只适合做导入检查，完整界面需要可用的 X11/Wayland 显示会话。
 
 ### RTX 50 系列显示 `no kernel image is available`
 
