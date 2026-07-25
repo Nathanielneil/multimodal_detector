@@ -24,8 +24,10 @@ classifiers = [
 dependencies = [
     "PySide6>=6.5.0",
     "opencv-python>=4.8.0,<5",
+    "opencv-contrib-python>=4.8.0,<5",
     "numpy>=1.24.0,<2",
     "mediapipe==0.10.9",
+    "protobuf>=3.11,<4",
     # SenseVoice-Small is the default ASR engine.  FunASR is an optional
     # extra because it downloads a substantially larger model/runtime.
     "sherpa-onnx>=1.10.0",
