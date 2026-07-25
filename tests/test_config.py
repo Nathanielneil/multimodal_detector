@@ -187,6 +187,15 @@ voice:
         errors = config.validate()
         assert any("voice.model_name" in e for e in errors)
 
+    def test_validate_invalid_asr_engine(self, tmp_path):
+        """Test validation catches an unsupported ASR backend."""
+        config_file = tmp_path / "invalid.yaml"
+        config_file.write_text('voice:\n  asr_engine: "unsupported"\n')
+
+        config = Config(str(config_file))
+        errors = config.validate()
+        assert any("voice.asr_engine" in e for e in errors)
+
     def test_validate_invalid_log_level(self, tmp_path):
         """Test validation catches invalid log level"""
         config_content = """

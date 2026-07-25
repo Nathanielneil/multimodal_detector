@@ -9,10 +9,14 @@ from typing import Optional, Dict
 from PIL import Image, ImageDraw, ImageFont
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QVBoxLayout, QHBoxLayout,
-    QMessageBox, QApplication, QFrame, QLabel, QScrollArea
+    QMessageBox, QApplication, QFrame, QLabel, QScrollArea,
+    QComboBox, QPushButton, QProgressBar
 )
 from PySide6.QtCore import Qt, QTimer, Slot
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QShortcut, QKeySequence
+from PySide6.QtGui import (
+    QCloseEvent, QKeyEvent, QShortcut, QKeySequence,
+    QPixmap, QPainter, QColor, QPen, QBrush
+)
 
 from .styles import MAIN_STYLESHEET
 from .control_panel import ControlPanel
@@ -31,11 +35,12 @@ class CollapsibleDroneCard(QFrame):
     展开时: 显示位置、电量、信号、高度、速度等详细信息
     """
 
-    def __init__(self, drone_id: int, color: tuple, parent=None):
+    def __init__(self, drone_id: int, color: tuple, parent=None, label: str = None):
         super().__init__(parent)
         self._drone_id = drone_id
         self._color = color
         self._color_hex = f"#{int(color[0]*255):02x}{int(color[1]*255):02x}{int(color[2]*255):02x}"
+        self._label = label or f"UAV-{self._drone_id}"
         self._is_expanded = False
 
         # 模拟数据
@@ -82,7 +87,7 @@ class CollapsibleDroneCard(QFrame):
         header_layout.addWidget(self._indicator)
 
         # 无人机ID
-        self._id_label = QLabel(f"UAV-{self._drone_id}")
+        self._id_label = QLabel(self._label)
         self._id_label.setStyleSheet(f"color: {self._color_hex}; font-size: 12px; font-weight: bold;")
         header_layout.addWidget(self._id_label)
 
@@ -90,6 +95,12 @@ class CollapsibleDroneCard(QFrame):
         self._status_label = QLabel("待机")
         self._status_label.setStyleSheet("color: #757575; font-size: 11px;")
         header_layout.addWidget(self._status_label, 1)
+
+        # 折叠态摘要：心跳 + 电量，便于全屏状态截图
+        self._summary_label = QLabel("HB -- | 100%")
+        self._summary_label.setStyleSheet("color: #757575; font-size: 10px;")
+        self._summary_label.setFixedWidth(78)
+        header_layout.addWidget(self._summary_label)
 
         # 展开/折叠图标
         self._expand_icon = QLabel("▶")
@@ -146,7 +157,7 @@ class CollapsibleDroneCard(QFrame):
         if self._is_expanded:
             self.setFixedHeight(115)
         else:
-            self.setFixedHeight(36)
+            self.setFixedHeight(34)
 
     def mousePressEvent(self, event):
         """点击切换展开/折叠"""
@@ -166,13 +177,16 @@ class CollapsibleDroneCard(QFrame):
         self._data.update(data)
 
         status = data.get('status', '待机')
+        robot_id = data.get('robot_id')
         pos = data.get('position', (0, 0, 0))
         battery = data.get('battery', 100)
         signal = data.get('signal', 100)
         speed = data.get('speed', 0.0)
+        online = data.get('online', status == '飞行中')
+        heartbeat = data.get('heartbeat')
 
         # 更新状态指示灯颜色
-        if status == '飞行中':
+        if online:
             self._indicator.setStyleSheet("color: #4caf50; font-size: 10px;")
             self._status_label.setStyleSheet("color: #4caf50; font-size: 11px; font-weight: bold;")
         else:
@@ -180,6 +194,8 @@ class CollapsibleDroneCard(QFrame):
             self._status_label.setStyleSheet("color: #757575; font-size: 11px;")
 
         # 更新文字
+        if robot_id:
+            self._id_label.setText(robot_id)
         self._status_label.setText(status)
         self._pos_label.setText(f"位置: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
         self._alt_label.setText(f"高度: {pos[2]:.1f} m")
@@ -195,15 +211,26 @@ class CollapsibleDroneCard(QFrame):
         self._battery_label.setText(f"电量: {battery}%")
         self._battery_label.setStyleSheet(f"color: {bat_color}; font-size: 10px; font-weight: bold;")
 
-        # 信号颜色
-        if signal > 60:
-            sig_color = "#4caf50"
-        elif signal > 30:
-            sig_color = "#ff9800"
+        if heartbeat is not None:
+            sig_color = "#4caf50" if heartbeat else "#ff9800"
+            hb_text = "跳动" if heartbeat else "等待"
+            hb_summary = "ON" if heartbeat else "WAIT"
+            self._signal_label.setText(f"心跳: {hb_text}")
+            self._signal_label.setStyleSheet(f"color: {sig_color}; font-size: 10px; font-weight: bold;")
         else:
-            sig_color = "#f44336"
-        self._signal_label.setText(f"信号: {signal}%")
-        self._signal_label.setStyleSheet(f"color: {sig_color}; font-size: 10px; font-weight: bold;")
+            # 信号颜色
+            if signal > 60:
+                sig_color = "#4caf50"
+            elif signal > 30:
+                sig_color = "#ff9800"
+            else:
+                sig_color = "#f44336"
+            self._signal_label.setText(f"信号: {signal}%")
+            self._signal_label.setStyleSheet(f"color: {sig_color}; font-size: 10px; font-weight: bold;")
+            hb_summary = f"{signal}%"
+
+        self._summary_label.setText(f"HB {hb_summary} | {battery}%")
+        self._summary_label.setStyleSheet(f"color: {bat_color}; font-size: 10px;")
 from .history_table import HistoryTable
 from .progress_dialog import ProgressDialog
 from .swarm_view_3d import SwarmView3D, FormationType as ViewFormationType, SwarmCommand as ViewSwarmCommand
@@ -309,6 +336,12 @@ class MainWindow(QMainWindow):
         # 当前手势命令
         self._current_gesture_command = ""
 
+        # 任务闭环状态
+        self._target_goal = 10
+        self._target_progress = 0
+        self._target_event_index = 0
+        self._task_completed = False
+
         # 手势到指令的映射 (使用 GestureType.value 中文)
         self._gesture_to_ros_command = {
             "集群起飞": SwarmCommand.TAKEOFF,        # 张开手掌 -> 起飞
@@ -331,7 +364,7 @@ class MainWindow(QMainWindow):
 
         # ROS Bridge (可选)
         self._ros_bridge = None
-        if _ros_available:
+        if _ros_available and config.get("ros.enabled", False):
             self._ros_bridge = ROSBridge()
 
         # 错误处理
@@ -357,7 +390,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         # 标题（与命令历史标题风格一致）
-        title = QLabel("无人机状态")
+        title = QLabel("设备状态")
         title.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
         layout.addWidget(title)
 
@@ -374,11 +407,19 @@ class MainWindow(QMainWindow):
         self._drone_status_layout.setContentsMargins(0, 0, 0, 0)
         self._drone_status_layout.setSpacing(4)
 
-        # 创建每架无人机的可展开状态卡片
+        # 创建每台设备的可展开状态卡片
         self._drone_status_cards = []
-        from .swarm_view_3d import DroneModel
-        for i in range(6):  # 默认6架
-            card = CollapsibleDroneCard(i, DroneModel.COLORS[i % len(DroneModel.COLORS)])
+        if hasattr(self, '_swarm_view_3d'):
+            status_list = self._swarm_view_3d.get_device_status_list()
+        else:
+            status_list = []
+        for i, status in enumerate(status_list):
+            color = status.get('color', (0.2, 0.5, 0.9))
+            card = CollapsibleDroneCard(
+                i,
+                color,
+                label=status.get('robot_id', f"DEV-{i + 1:02d}")
+            )
             self._drone_status_layout.addWidget(card)
             self._drone_status_cards.append(card)
 
@@ -399,94 +440,449 @@ class MainWindow(QMainWindow):
                 border-radius: 6px;
             }
         """)
-        card.setFixedHeight(80)
+        card.setFixedHeight(42)
 
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(8)
 
-        # 标题行
-        title_layout = QHBoxLayout()
-        title_layout.setSpacing(8)
-
-        title = QLabel("集群数量")
+        title = QLabel("平台数量")
         title.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
-        title_layout.addWidget(title)
-        title_layout.addStretch()
+        layout.addWidget(title)
 
-        layout.addLayout(title_layout)
-
-        # 控制行：数量显示 + 增减按钮
-        control_layout = QHBoxLayout()
-        control_layout.setSpacing(10)
-
-        # 当前数量标签
-        self._drone_count_label = QLabel("当前: 6 架")
+        self._drone_count_label = QLabel(self._platform_count_summary())
+        self._drone_count_label.setWordWrap(False)
         self._drone_count_label.setStyleSheet("""
-            font-size: 13px;
+            font-size: 12px;
             color: #1e88e5;
             font-weight: bold;
         """)
-        control_layout.addWidget(self._drone_count_label)
-
-        control_layout.addStretch()
-
-        # 减少按钮
-        from PySide6.QtWidgets import QPushButton
-        self._btn_remove_drone = QPushButton("-")
-        self._btn_remove_drone.setFixedSize(36, 36)
-        self._btn_remove_drone.setCursor(Qt.PointingHandCursor)
-        self._btn_remove_drone.setStyleSheet("""
-            QPushButton {
-                background-color: #ffebee;
-                border: 2px solid #ef9a9a;
-                border-radius: 8px;
-                font-size: 24px;
-                font-weight: bold;
-                color: #c62828;
-                padding: 0px;
-                text-align: center;
-            }
-            QPushButton:hover {
-                background-color: #ffcdd2;
-                border-color: #e57373;
-            }
-            QPushButton:pressed {
-                background-color: #ef9a9a;
-            }
-        """)
-        self._btn_remove_drone.clicked.connect(self._on_remove_drone)
-        control_layout.addWidget(self._btn_remove_drone)
-
-        # 增加按钮
-        self._btn_add_drone = QPushButton("+")
-        self._btn_add_drone.setFixedSize(36, 36)
-        self._btn_add_drone.setCursor(Qt.PointingHandCursor)
-        self._btn_add_drone.setStyleSheet("""
-            QPushButton {
-                background-color: #e8f5e9;
-                border: 2px solid #a5d6a7;
-                border-radius: 8px;
-                font-size: 24px;
-                font-weight: bold;
-                color: #2e7d32;
-                padding: 0px;
-                text-align: center;
-            }
-            QPushButton:hover {
-                background-color: #c8e6c9;
-                border-color: #81c784;
-            }
-            QPushButton:pressed {
-                background-color: #a5d6a7;
-            }
-        """)
-        self._btn_add_drone.clicked.connect(self._on_add_drone)
-        control_layout.addWidget(self._btn_add_drone)
-
-        layout.addLayout(control_layout)
+        layout.addWidget(self._drone_count_label, 1)
 
         return card
+
+    def _platform_count_summary(self) -> str:
+        """返回右侧栏总平台数量摘要。"""
+        if not hasattr(self, '_swarm_view_3d'):
+            drone_count = config.get("visualization.drone_count", 8)
+            dog_count = config.get("visualization.robot_dog_count", 1)
+            ugv_count = config.get("visualization.ugv_count", 1)
+        else:
+            drone_count = self._swarm_view_3d.drone_count
+            dog_count = len(self._swarm_view_3d.robot_dogs)
+            ugv_count = len(self._swarm_view_3d.ugvs)
+
+        total = drone_count + dog_count + ugv_count
+        return f"{total} 台（无人机 {drone_count}、机器狗 {dog_count}、无人车 {ugv_count}）"
+
+    def _create_platform_command_panel(self) -> QFrame:
+        """创建三类平台的本地仿真指令面板。"""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 6px;
+            }
+        """)
+        card.setFixedHeight(46)
+
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(12, 7, 12, 7)
+        layout.setSpacing(6)
+
+        title = QLabel("平台指令")
+        title.setFixedWidth(58)
+        title.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
+        layout.addWidget(title)
+
+        self._platform_command_specs = [
+            ("drone", "无人机", [
+                ("起飞", "takeoff"),
+                ("降落", "land"),
+                ("编队", "formation"),
+                ("上升", "altitude_up"),
+                ("下降", "altitude_down"),
+                ("前进", "move_forward"),
+                ("急停", "emergency"),
+            ]),
+            ("robot_dog", "机器狗", [
+                ("站立", "stand"),
+                ("趴下", "lie_down"),
+                ("坐下", "sit"),
+                ("前进", "forward"),
+                ("后退", "backward"),
+                ("左转", "turn_left"),
+                ("右转", "turn_right"),
+                ("停止", "stop"),
+            ]),
+            ("ugv", "无人车", [
+                ("启动", "start"),
+                ("停车", "park"),
+                ("前进", "forward"),
+                ("后退", "backward"),
+                ("左转", "turn_left"),
+                ("右转", "turn_right"),
+                ("加速", "speed_up"),
+                ("减速", "speed_down"),
+            ]),
+        ]
+
+        self._platform_selector = QComboBox()
+        self._platform_selector.setFixedWidth(76)
+        self._platform_selector.setFixedHeight(28)
+        self._platform_selector.setStyleSheet("""
+            QComboBox {
+                padding: 0px 6px;
+                min-height: 28px;
+                max-height: 28px;
+                border: 1px solid #d0d7de;
+                border-radius: 4px;
+                background-color: #ffffff;
+            }
+        """)
+        for platform, platform_label, _ in self._platform_command_specs:
+            self._platform_selector.addItem(platform_label, platform)
+        layout.addWidget(self._platform_selector)
+
+        self._platform_command_combo = QComboBox()
+        self._platform_command_combo.setFixedHeight(28)
+        self._platform_command_combo.setStyleSheet("""
+            QComboBox {
+                padding: 0px 6px;
+                min-height: 28px;
+                max-height: 28px;
+                border: 1px solid #d0d7de;
+                border-radius: 4px;
+                background-color: #ffffff;
+            }
+        """)
+        layout.addWidget(self._platform_command_combo, 1)
+
+        execute_button = QPushButton("执行")
+        execute_button.setFixedWidth(48)
+        execute_button.setFixedHeight(28)
+        execute_button.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #1e88e5;
+                border-radius: 4px;
+                color: #1e88e5;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 0px;
+                min-height: 28px;
+                max-height: 28px;
+            }
+            QPushButton:hover {
+                background-color: #e3f2fd;
+            }
+        """)
+        execute_button.clicked.connect(self._execute_selected_platform_command)
+        layout.addWidget(execute_button)
+
+        self._platform_selector.currentIndexChanged.connect(
+            self._refresh_platform_command_combo
+        )
+        self._refresh_platform_command_combo()
+
+        return card
+
+    def _refresh_platform_command_combo(self):
+        """根据平台选择刷新对应指令集。"""
+        if not hasattr(self, '_platform_command_combo'):
+            return
+
+        platform = self._platform_selector.currentData()
+        self._platform_command_combo.clear()
+        for platform_id, _, commands in self._platform_command_specs:
+            if platform_id == platform:
+                for command_label, command_value in commands:
+                    self._platform_command_combo.addItem(command_label, command_value)
+                break
+
+    def _execute_selected_platform_command(self):
+        """执行当前平台下拉框选择的指令。"""
+        platform = self._platform_selector.currentData()
+        command = self._platform_command_combo.currentData()
+        if not platform or not command:
+            return
+
+        self._execute_platform_panel_command(
+            platform,
+            self._platform_selector.currentText(),
+            command,
+            self._platform_command_combo.currentText(),
+        )
+
+    def _create_acceptance_demo_panel(self) -> QFrame:
+        """创建任务闭环面板。"""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 6px;
+            }
+        """)
+        card.setFixedHeight(267)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 7, 10, 7)
+        layout.setSpacing(5)
+
+        self._command_popup_label = QLabel("指令: 待触发")
+        self._command_popup_label.setWordWrap(True)
+        self._command_popup_label.setFixedHeight(34)
+        self._command_popup_label.setStyleSheet("""
+            background-color: #e3f2fd;
+            border: 1px solid #64b5f6;
+            border-radius: 4px;
+            padding: 4px 6px;
+            color: #0d47a1;
+            font-size: 11px;
+            font-weight: bold;
+        """)
+        layout.addWidget(self._command_popup_label)
+
+        self._target_progress_bar = QProgressBar()
+        self._target_progress_bar.setRange(0, self._target_goal)
+        self._target_progress_bar.setValue(0)
+        self._target_progress_bar.setFormat("目标: %v/%m")
+        self._target_progress_bar.setFixedHeight(18)
+        layout.addWidget(self._target_progress_bar)
+
+        self._target_event_card = QFrame()
+        self._target_event_card.setFixedHeight(58)
+        self._target_event_card.setStyleSheet("""
+            QFrame {
+                background-color: #fff8e1;
+                border: 1px solid #ffb300;
+                border-radius: 4px;
+            }
+        """)
+        event_layout = QHBoxLayout(self._target_event_card)
+        event_layout.setContentsMargins(6, 5, 6, 5)
+        event_layout.setSpacing(6)
+
+        self._target_image_label = QLabel()
+        self._target_image_label.setFixedSize(64, 42)
+        self._target_image_label.setPixmap(self._make_target_pixmap("TGT"))
+        self._target_image_label.setScaledContents(True)
+        event_layout.addWidget(self._target_image_label)
+
+        self._target_event_text = QLabel("事件: 暂无")
+        self._target_event_text.setWordWrap(True)
+        self._target_event_text.setStyleSheet("font-size: 11px; color: #4e342e;")
+        event_layout.addWidget(self._target_event_text, 1)
+        layout.addWidget(self._target_event_card)
+
+        button_row_1 = QHBoxLayout()
+        button_row_1.setSpacing(5)
+        self._btn_demo_recognition = QPushButton("指令")
+        self._btn_demo_topology = QPushButton("拓扑")
+        self._btn_demo_target = QPushButton("目标")
+        compact_button_style = """
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #1e88e5;
+                border-radius: 4px;
+                color: #1e88e5;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 0px;
+                min-height: 24px;
+                max-height: 24px;
+            }
+            QPushButton:hover {
+                background-color: #e3f2fd;
+            }
+            QPushButton:pressed {
+                background-color: #bbdefb;
+            }
+        """
+        for button in (self._btn_demo_recognition, self._btn_demo_topology, self._btn_demo_target):
+            button.setFixedHeight(24)
+            button.setStyleSheet(compact_button_style)
+            button_row_1.addWidget(button)
+        layout.addLayout(button_row_1)
+
+        button_row_2 = QHBoxLayout()
+        button_row_2.setSpacing(5)
+        self._btn_demo_complete = QPushButton("10/10")
+        self._btn_demo_rtl = QPushButton("归建")
+        for button in (self._btn_demo_complete, self._btn_demo_rtl):
+            button.setFixedHeight(24)
+            button.setStyleSheet(compact_button_style)
+            button_row_2.addWidget(button)
+        layout.addLayout(button_row_2)
+
+        self._closure_status_label = QLabel("状态: 待命")
+        self._closure_status_label.setFixedHeight(16)
+        self._closure_status_label.setStyleSheet("color: #757575; font-size: 11px;")
+        layout.addWidget(self._closure_status_label)
+
+        self._btn_demo_recognition.clicked.connect(self._simulate_recognition_popup)
+        self._btn_demo_topology.clicked.connect(self._simulate_topology_demo)
+        self._btn_demo_target.clicked.connect(self._simulate_target_event)
+        self._btn_demo_complete.clicked.connect(self._complete_targets_demo)
+        self._btn_demo_rtl.clicked.connect(self._trigger_rtl_demo)
+
+        return card
+
+    def _make_target_pixmap(self, label: str) -> QPixmap:
+        """生成目标事件缩略图。"""
+        pixmap = QPixmap(72, 48)
+        pixmap.fill(QColor("#263238"))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#ffca28"), 2))
+        painter.setBrush(QBrush(QColor(255, 202, 40, 80)))
+        painter.drawEllipse(22, 10, 28, 28)
+        painter.drawLine(36, 2, 36, 46)
+        painter.drawLine(8, 24, 64, 24)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(4, 44, label[:8])
+        painter.end()
+        return pixmap
+
+    def _record_demo_event(self, command: str, details: dict):
+        """向历史表记录任务闭环事件。"""
+        self._history_table.add_result(
+            DetectionResult(
+                modal_type="simulation",
+                command=command,
+                confidence=1.0,
+                details=details,
+            )
+        )
+
+    def _show_command_popup(self, text: str, source: str = "仿真识别"):
+        """显示识别文字指令弹窗区域。"""
+        if not hasattr(self, '_command_popup_label'):
+            return
+
+        self._command_popup_label.setText(f"指令: {source} -> {text}")
+        self._command_popup_label.setStyleSheet("""
+            background-color: #e8f5e9;
+            border: 2px solid #43a047;
+            border-radius: 4px;
+            padding: 4px 6px;
+            color: #1b5e20;
+            font-size: 11px;
+            font-weight: bold;
+        """)
+
+    def _set_target_progress(self, value: int):
+        """更新目标进度。"""
+        self._target_progress = max(0, min(self._target_goal, value))
+        if hasattr(self, '_target_progress_bar'):
+            self._target_progress_bar.setValue(self._target_progress)
+            self._target_progress_bar.setFormat(
+                f"目标: {self._target_progress}/{self._target_goal}"
+            )
+
+    def _simulate_recognition_popup(self):
+        """模拟语音/手势识别成功后的文字指令弹窗。"""
+        command_text = "建立网络拓扑，以1号车为中心"
+        self._show_command_popup(command_text, "语音/手势")
+        self._record_demo_event(
+            "识别成功: 建立网络拓扑",
+            {"source": "voice_or_gesture", "command_label": command_text}
+        )
+        self.statusBar().showMessage("识别成功，已转换为文字指令", 1500)
+
+    def _simulate_topology_demo(self):
+        """启动拓扑辐射动画。"""
+        self._show_command_popup("建立网络拓扑，以1号车为中心", "指令执行")
+        self._swarm_view_3d.start_topology_animation()
+        self._closure_status_label.setText("状态: 拓扑建立中")
+        self._record_demo_event(
+            "拓扑动画: 1号车中心辐射",
+            {"center": "UGV-01", "device_count": 10, "mode": "local_simulation"}
+        )
+        self.statusBar().showMessage("拓扑动画已启动", 1500)
+
+    def _simulate_target_event(self):
+        """模拟边缘设备发现目标并弹出事件卡片。"""
+        devices = [
+            device for device in self._swarm_view_3d.get_device_status_list()
+            if device.get("robot_id") != "UGV-01"
+        ]
+        if not devices:
+            return
+
+        device = devices[self._target_event_index % len(devices)]
+        self._target_event_index += 1
+        self._set_target_progress(self._target_progress + 1)
+
+        base_pos = device.get("position", (0.0, 0.0, 0.0))
+        coords = (
+            base_pos[0] + 1.2 + 0.15 * self._target_progress,
+            base_pos[1] + 0.8,
+            max(0.0, base_pos[2]),
+        )
+        robot_id = device.get("robot_id", "UNKNOWN")
+        self._target_image_label.setPixmap(self._make_target_pixmap(robot_id))
+        self._target_event_text.setText(
+            f"图像已截获  {robot_id}\n坐标: ({coords[0]:.1f}, {coords[1]:.1f}, {coords[2]:.1f})"
+        )
+        self._target_event_card.setStyleSheet("""
+            QFrame {
+                background-color: #fff3e0;
+                border: 2px solid #fb8c00;
+                border-radius: 4px;
+            }
+        """)
+        self._closure_status_label.setText("状态: 目标搜索中")
+        self._record_demo_event(
+            f"目标发现: {robot_id}",
+            {
+                "robot_id": robot_id,
+                "absolute_position": coords,
+                "progress": f"{self._target_progress}/{self._target_goal}",
+            }
+        )
+
+        if self._target_progress >= self._target_goal:
+            self._closure_status_label.setText("状态: 目标 10/10")
+
+    def _complete_targets_demo(self):
+        """直接推进到目标进度 10/10，便于截局部进度图。"""
+        self._set_target_progress(self._target_goal)
+        self._show_command_popup("目标进度已达到 10/10", "任务闭环")
+        self._target_image_label.setPixmap(self._make_target_pixmap("10/10"))
+        self._target_event_text.setText("目标计数已完成\n进度: 10/10")
+        self._target_event_card.setStyleSheet("""
+            QFrame {
+                background-color: #e8f5e9;
+                border: 2px solid #43a047;
+                border-radius: 4px;
+            }
+        """)
+        self._closure_status_label.setText("状态: 目标 10/10")
+        self._record_demo_event(
+            "目标进度: 10/10",
+            {"progress": "10/10", "mode": "local_simulation"}
+        )
+        self.statusBar().showMessage("目标进度已达到 10/10", 1500)
+
+    def _trigger_rtl_demo(self):
+        """弹出任务完成并下发 RTL 归建指令。"""
+        self._task_completed = True
+        self._set_target_progress(self._target_goal)
+        self._show_command_popup("任务完成，全员归建（RTL）", "全局闭环")
+        self._closure_status_label.setText("状态: 任务完成，RTL 已下发")
+
+        self._swarm_view_3d.execute_platform_command("drone", "rtl")
+        self._swarm_view_3d.execute_platform_command("robot_dog", "stop")
+        self._swarm_view_3d.execute_platform_command("ugv", "park")
+
+        self._record_demo_event(
+            "任务完成: 全员归建 RTL",
+            {"progress": "10/10", "command": "rtl", "mode": "local_simulation"}
+        )
+        self.statusBar().showMessage("任务完成，全员归建 RTL 已下发", 2000)
 
     @Slot()
     def _on_add_drone(self):
@@ -495,7 +891,7 @@ class MainWindow(QMainWindow):
             return
 
         current_count = self._swarm_view_3d.drone_count
-        max_count = 12  # 最大数量限制
+        max_count = config.get("visualization.max_drones", 8)
 
         if current_count >= max_count:
             self.statusBar().showMessage(f"已达到最大数量 ({max_count} 架)", 2000)
@@ -505,7 +901,10 @@ class MainWindow(QMainWindow):
         self._swarm_view_3d.set_drone_count(new_count)
         self._update_drone_count_display()
         self._rebuild_drone_status_cards()
-        self.statusBar().showMessage(f"集群数量: {new_count} 架", 1500)
+        self.statusBar().showMessage(
+            f"无人机数量: {new_count} 架，{self._platform_count_summary()}",
+            1500
+        )
 
     @Slot()
     def _on_remove_drone(self):
@@ -514,7 +913,7 @@ class MainWindow(QMainWindow):
             return
 
         current_count = self._swarm_view_3d.drone_count
-        min_count = 1  # 最小数量限制
+        min_count = config.get("visualization.min_drones", 8)
 
         if current_count <= min_count:
             self.statusBar().showMessage(f"至少保留 {min_count} 架无人机", 2000)
@@ -524,16 +923,18 @@ class MainWindow(QMainWindow):
         self._swarm_view_3d.set_drone_count(new_count)
         self._update_drone_count_display()
         self._rebuild_drone_status_cards()
-        self.statusBar().showMessage(f"集群数量: {new_count} 架", 1500)
+        self.statusBar().showMessage(
+            f"无人机数量: {new_count} 架，{self._platform_count_summary()}",
+            1500
+        )
 
     def _update_drone_count_display(self):
-        """更新无人机数量显示"""
+        """更新右侧总平台数量显示。"""
         if hasattr(self, '_drone_count_label') and hasattr(self, '_swarm_view_3d'):
-            count = self._swarm_view_3d.drone_count
-            self._drone_count_label.setText(f"当前: {count} 架")
+            self._drone_count_label.setText(self._platform_count_summary())
 
     def _rebuild_drone_status_cards(self):
-        """重建无人机状态卡片列表"""
+        """重建设备状态卡片列表"""
         if not hasattr(self, '_drone_status_layout'):
             return
 
@@ -543,25 +944,83 @@ class MainWindow(QMainWindow):
         self._drone_status_cards.clear()
 
         # 重新创建卡片
-        from .swarm_view_3d import DroneModel
-        count = self._swarm_view_3d.drone_count
-        for i in range(count):
-            card = CollapsibleDroneCard(i, DroneModel.COLORS[i % len(DroneModel.COLORS)])
+        status_list = self._swarm_view_3d.get_device_status_list()
+        for i, status in enumerate(status_list):
+            card = CollapsibleDroneCard(
+                i,
+                status.get('color', (0.2, 0.5, 0.9)),
+                label=status.get('robot_id', f"DEV-{i + 1:02d}")
+            )
             self._drone_status_layout.insertWidget(i, card)
             self._drone_status_cards.append(card)
 
     def _update_drone_status_display(self):
-        """更新无人机状态显示"""
+        """更新 10 台设备状态显示"""
         if not hasattr(self, '_swarm_view_3d'):
             return
 
-        status_list = self._swarm_view_3d.get_drone_status_list()
+        status_list = self._swarm_view_3d.get_device_status_list()
 
-        for status in status_list:
-            drone_id = status['id']
-            if drone_id < len(self._drone_status_cards):
-                card = self._drone_status_cards[drone_id]
+        if len(status_list) != len(self._drone_status_cards):
+            self._rebuild_drone_status_cards()
+
+        for idx, status in enumerate(status_list):
+            if idx < len(self._drone_status_cards):
+                card = self._drone_status_cards[idx]
                 card.update_data(status)
+
+    def _update_ground_platform_status_display(self):
+        """更新机器狗/无人车的简要状态。"""
+        if (not hasattr(self, '_swarm_view_3d') or
+                not hasattr(self, '_ground_platform_status_label')):
+            return
+
+        status_list = self._swarm_view_3d.get_ground_platform_status()
+        parts = []
+        for status in status_list:
+            parts.append(
+                f"{status.get('name', '平台')}: {status.get('status', '待命')}"
+            )
+        self._ground_platform_status_label.setText(" | ".join(parts))
+
+    def _execute_platform_panel_command(
+        self,
+        platform: str,
+        platform_label: str,
+        command: str,
+        command_label: str
+    ):
+        """执行平台面板发出的本地仿真指令。"""
+        self._execute_simulation_command(platform, platform_label, command, command_label)
+
+    def _execute_simulation_command(
+        self,
+        platform: str,
+        platform_label: str,
+        command: str,
+        command_label: str
+    ):
+        """统一执行并记录三平台本地仿真指令。"""
+        if not hasattr(self, '_swarm_view_3d'):
+            return
+
+        self._swarm_view_3d.execute_platform_command(platform, command)
+
+        result = DetectionResult(
+            modal_type="simulation",
+            command=f"{platform_label}: {command_label}",
+            confidence=1.0,
+            details={
+                "platform": platform,
+                "platform_label": platform_label,
+                "command": command,
+                "command_label": command_label,
+                "mode": "local_simulation",
+            }
+        )
+        self._history_table.add_result(result)
+        self._update_ground_platform_status_display()
+        self.statusBar().showMessage(f"{platform_label}指令: {command_label}", 1500)
 
     def _setup_ui(self):
         """设置界面布局"""
@@ -599,34 +1058,45 @@ class MainWindow(QMainWindow):
         self._center_splitter.setStretchFactor(0, 1)
         self._center_splitter.setStretchFactor(1, 1)
 
-        # 右栏: 垂直布局 (命令历史 + 集群控制 + 无人机状态)
+        # 右栏: 垂直布局 (命令历史 + 控制区 + 设备状态)
         right_widget = QWidget()
+        right_widget.setMinimumWidth(320)
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(8)
+        right_layout.setSpacing(6)
 
         # 右栏上部: 命令历史表格
         self._history_table = HistoryTable()
         self._history_table.setMinimumWidth(200)
+        self._history_table.setMinimumHeight(92)
+        self._history_table.setMaximumHeight(130)
 
         # 右栏中部: 集群控制卡片 (新增)
         self._swarm_control_card = self._create_swarm_control_card()
 
+        # 右栏中部: 三平台本地仿真指令
+        self._platform_command_panel = self._create_platform_command_panel()
+
+        # 右栏中部: 任务闭环触发面板
+        self._acceptance_demo_panel = self._create_acceptance_demo_panel()
+
         # 右栏下部: 无人机状态监控面板
         self._drone_status_panel = self._create_drone_status_panel()
 
-        # 按顺序添加: 命令历史 → 集群控制卡片 → 无人机状态
-        right_layout.addWidget(self._history_table, 3)  # 弹性比例 3
-        right_layout.addWidget(self._swarm_control_card)  # 固定高度，在中间
-        right_layout.addWidget(self._drone_status_panel, 2)  # 弹性比例 2
+        # 按顺序添加: 命令历史 → 控制区 → 设备状态
+        right_layout.addWidget(self._history_table)
+        right_layout.addWidget(self._swarm_control_card)
+        right_layout.addWidget(self._platform_command_panel)
+        right_layout.addWidget(self._acceptance_demo_panel)
+        right_layout.addWidget(self._drone_status_panel, 5)  # 展示 10 台设备并发状态
 
         # 添加到主分割器
         self._splitter.addWidget(self._control_panel)
         self._splitter.addWidget(self._center_splitter)
         self._splitter.addWidget(right_widget)
 
-        # 设置初始比例 (1:2.5:1)
-        self._splitter.setSizes([240, 700, 280])
+        # 设置初始比例 (右栏略宽，避免指令区文字换行压缩)
+        self._splitter.setSizes([230, 690, 340])
         self._splitter.setStretchFactor(0, 1)
         self._splitter.setStretchFactor(1, 3)
         self._splitter.setStretchFactor(2, 1)
@@ -779,6 +1249,7 @@ class MainWindow(QMainWindow):
         # 步骤1: 创建语音识别 Worker（可通过配置切换引擎）
         current_step += 1
         asr_engine = config.get("voice.asr_engine", "sensevoice")  # sensevoice | funasr
+        asr_label = "FunASR" if asr_engine == "funasr" else "SenseVoice"
         if asr_engine == "funasr":
             progress.set_status("正在加载语音模型...")
             progress.set_progress(int(current_step / total_steps * 100))
@@ -800,7 +1271,7 @@ class MainWindow(QMainWindow):
             Qt.QueuedConnection,
         )
         if not self._funasr_worker.initialize():
-            errors.append("FunASR 模型加载失败")
+            errors.append(f"{asr_label} 模型加载失败")
         else:
             self._funasr_worker.start()
 
@@ -997,6 +1468,7 @@ class MainWindow(QMainWindow):
         if self._drone_status_frame_count >= 5:
             self._drone_status_frame_count = 0
             self._update_drone_status_display()
+            self._update_ground_platform_status_display()
 
     def _draw_stats_overlay(self, frame):
         """
@@ -1342,6 +1814,10 @@ class MainWindow(QMainWindow):
             result.confidence
         )
 
+        if result.modal_type in ("voice", "gesture"):
+            source = "语音识别" if result.modal_type == "voice" else "手势识别"
+            self._show_command_popup(result.command, source)
+
         # 发布到 ROS (如果可用)
         self._publish_to_ros(result)
 
@@ -1352,7 +1828,7 @@ class MainWindow(QMainWindow):
         Args:
             result: 检测结果
         """
-        # 只处理置信度超过阈值的结果 (语音指令跳过此检查，因为 Whisper 已内置过滤)
+        # 只处理置信度超过阈值的结果。语音结果由 ASR worker 自行过滤。
         threshold = self._control_panel.get_recall_threshold()
         logger.debug(f"发布检测结果: 模态={result.modal_type}, 置信度={result.confidence:.2f}, 阈值={threshold:.2f}")
         if result.modal_type != "voice" and result.confidence < threshold:
@@ -1394,6 +1870,49 @@ class MainWindow(QMainWindow):
                 )
             self._process_voice_command(result.command)
 
+    def _process_ground_voice_command(self, text_lower: str) -> bool:
+        """处理带平台语义的地面平台语音指令。"""
+        dog_target = any(keyword in text_lower for keyword in ("机器狗", "机器犬", "四足", "狗"))
+        ugv_target = any(keyword in text_lower for keyword in ("无人车", "小车", "车辆", "ugv"))
+
+        # "停车/启动车辆" 这类词天然指向无人车，方便演示时少说前缀。
+        if not ugv_target and any(keyword in text_lower for keyword in ("停车", "启动车", "车辆")):
+            ugv_target = True
+
+        if dog_target:
+            dog_commands = {
+                ("站立", "起来", "stand"): ("stand", "站立"),
+                ("趴下", "卧倒", "lie down", "lie_down"): ("lie_down", "趴下"),
+                ("坐下", "sit"): ("sit", "坐下"),
+                ("前进", "向前", "forward"): ("forward", "前进"),
+                ("后退", "backward", "back"): ("backward", "后退"),
+                ("左转", "turn left"): ("turn_left", "左转"),
+                ("右转", "turn right"): ("turn_right", "右转"),
+                ("停止", "停下", "stop"): ("stop", "停止"),
+            }
+            for keywords, (command, label) in dog_commands.items():
+                if any(keyword in text_lower for keyword in keywords):
+                    self._execute_simulation_command("robot_dog", "机器狗", command, label)
+                    return True
+
+        if ugv_target:
+            ugv_commands = {
+                ("启动", "start"): ("start", "启动"),
+                ("停车", "停止", "停下", "park", "stop"): ("park", "停车"),
+                ("前进", "向前", "forward"): ("forward", "前进"),
+                ("后退", "backward", "back"): ("backward", "后退"),
+                ("左转", "turn left"): ("turn_left", "左转"),
+                ("右转", "turn right"): ("turn_right", "右转"),
+                ("加速", "speed up", "speed_up"): ("speed_up", "加速"),
+                ("减速", "speed down", "speed_down"): ("speed_down", "减速"),
+            }
+            for keywords, (command, label) in ugv_commands.items():
+                if any(keyword in text_lower for keyword in keywords):
+                    self._execute_simulation_command("ugv", "无人车", command, label)
+                    return True
+
+        return False
+
     def _process_voice_command(self, text: str):
         """
         处理语音指令并发送到 3D 可视化和 ROS
@@ -1403,6 +1922,21 @@ class MainWindow(QMainWindow):
         """
         text_lower = text.lower()
         logger.debug(f"语音指令识别: '{text}' -> '{text_lower}'")
+
+        if self._process_ground_voice_command(text_lower):
+            return
+
+        if any(keyword in text_lower for keyword in ("拓扑", "网络", "组网")):
+            self._simulate_topology_demo()
+            return
+
+        if any(keyword in text_lower for keyword in ("发现目标", "目标发现", "检测目标")):
+            self._simulate_target_event()
+            return
+
+        if any(keyword in text_lower for keyword in ("归建", "rtl", "返航", "任务完成")):
+            self._trigger_rtl_demo()
+            return
 
         # 中文关键词映射
         voice_commands = {
@@ -1464,6 +1998,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_swarm_command_executed(self, command: str):
         """3D 可视化指令执行完成"""
+        self._update_ground_platform_status_display()
         self.statusBar().showMessage(f"集群指令: {command}", 1500)
 
     def closeEvent(self, event: QCloseEvent):

@@ -1,0 +1,63 @@
+{
+  "name": "Clearpath Husky demo UGV",
+  "source": "https://github.com/husky/husky/tree/noetic-devel/husky_description",
+  "license": "BSD-3-Clause",
+  "optimization": "visual-only OBJ, 5-10mm vertex clustering, shared wheel mesh reused by four parts",
+  "scale": 1.25,
+  "rotation_deg": [0, 0, 0],
+  "offset": [0, 0, 0.013],
+  "smooth": false,
+  "parts": [
+    {
+      "mesh": "husky_base.obj",
+      "color": [0.08, 0.08, 0.075, 1.0],
+      "offset": [0, 0, 0.13228]
+    },
+    {
+      "mesh": "husky_top_chassis.obj",
+      "color": [0.22, 0.22, 0.2, 1.0],
+      "offset": [0, 0, 0.13228]
+    },
+    {
+      "mesh": "husky_bumper.obj",
+      "color": [0.03, 0.03, 0.028, 1.0],
+      "offset": [0.48, 0, 0.22328]
+    },
+    {
+      "mesh": "husky_bumper.obj",
+      "color": [0.03, 0.03, 0.028, 1.0],
+      "offset": [-0.48, 0, 0.22328],
+      "rotation_deg": [0, 0, 180]
+    },
+    {
+      "mesh": "husky_top_plate.obj",
+      "color": [0.92, 0.74, 0.12, 1.0],
+      "offset": [0.0812, 0, 0.37728]
+    },
+    {
+      "mesh": "husky_user_rail.obj",
+      "color": [0.12, 0.12, 0.11, 1.0],
+      "offset": [0.272, 0, 0.37728]
+    },
+    {
+      "mesh": "husky_wheel.obj",
+      "color": [0.018, 0.018, 0.016, 1.0],
+      "offset": [0.256, 0.2775, 0.1651]
+    },
+    {
+      "mesh": "husky_wheel.obj",
+      "color": [0.018, 0.018, 0.016, 1.0],
+      "offset": [0.256, -0.2775, 0.1651]
+    },
+    {
+      "mesh": "husky_wheel.obj",
+      "color": [0.018, 0.018, 0.016, 1.0],
+      "offset": [-0.256, 0.2775, 0.1651]
+    },
+    {
+      "mesh": "husky_wheel.obj",
+      "color": [0.018, 0.018, 0.016, 1.0],
+      "offset": [-0.256, -0.2775, 0.1651]
+    }
+  ]
+}

@@ -21,7 +21,9 @@ from PySide6.QtGui import QFont
 
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
+from config import config
 from utils.logger import get_logger
+from .ground_vehicles import PlatformType, RobotDogModel, UGVModel
 
 logger = get_logger(__name__)
 
@@ -596,6 +598,7 @@ class SwarmCommand(Enum):
     ALTITUDE_DOWN = "altitude_down"
     EMERGENCY_STOP = "emergency"
     MOVE_FORWARD = "move_forward"  # 编队向前飞行
+    RTL = "rtl"                    # 全员归建
 
 
 class FormationGenerator:
@@ -1407,7 +1410,9 @@ class SwarmView3D(QWidget):
         super().__init__(parent)
 
         # 状态
-        self.drone_count = 6
+        self.drone_count = config.get("visualization.drone_count", 8)
+        self.robot_dog_count = config.get("visualization.robot_dog_count", 1)
+        self.ugv_count = config.get("visualization.ugv_count", 1)
         self.formation_radius = 2.0
         self.base_altitude = 1.5
         self.center = (0.0, 0.0)
@@ -1423,6 +1428,13 @@ class SwarmView3D(QWidget):
 
         # 无人机模型
         self.drones: List[DroneModel] = []
+        self.robot_dogs: List[RobotDogModel] = []
+        self.ugvs: List[UGVModel] = []
+        self._last_platform_command = {
+            PlatformType.DRONE.value: "待命",
+            PlatformType.ROBOT_DOG.value: "待命",
+            PlatformType.UGV.value: "待命",
+        }
 
         # 编队连线
         self.formation_lines: Optional[gl.GLLinePlotItem] = None
@@ -1432,6 +1444,15 @@ class SwarmView3D(QWidget):
         self._animation_timer.timeout.connect(self._update_animation)
         self._animation_timer.start(33)  # 30 FPS
         self._last_animation_time = None  # 用于计算实际 dt
+
+        # 拓扑动画：以 1 号无人车为中心向外辐射连线
+        self._topology_timer = QTimer(self)
+        self._topology_timer.setInterval(180)
+        self._topology_timer.timeout.connect(self._advance_topology_animation)
+        self._topology_lines: List[gl.GLLinePlotItem] = []
+        self._topology_targets: List[Dict] = []
+        self._topology_source: Optional[Dict] = None
+        self._topology_step = 0
 
         # 静态障碍物
         self.obstacles: List[gl.GLScatterPlotItem] = []
@@ -1452,7 +1473,9 @@ class SwarmView3D(QWidget):
         self._create_obstacles()
         self._create_dynamic_obstacles()
         self._create_drones()
+        self._create_ground_platforms()
         self._init_ground_positions()
+        self._update_status_display()
 
     def _setup_ui(self):
         """设置界面"""
@@ -1484,10 +1507,6 @@ class SwarmView3D(QWidget):
         self._altitude_label = QLabel("高度: 0.0m")
         self._altitude_label.setStyleSheet("color: #81C784; font-size: 12px;")
 
-        # 无人机数量
-        self._count_label = QLabel(f"无人机: {self.drone_count}架")
-        self._count_label.setStyleSheet("color: #FFB74D; font-size: 12px;")
-
         # 避障状态
         self._avoidance_label = QLabel("避障: 开启")
         self._avoidance_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
@@ -1507,8 +1526,6 @@ class SwarmView3D(QWidget):
         status_layout.addWidget(self._formation_label)
         status_layout.addSpacing(15)
         status_layout.addWidget(self._altitude_label)
-        status_layout.addSpacing(15)
-        status_layout.addWidget(self._count_label)
         status_layout.addSpacing(15)
         status_layout.addWidget(self._avoidance_label)
         status_layout.addSpacing(15)
@@ -1531,11 +1548,13 @@ class SwarmView3D(QWidget):
         self._gl_widget.setCameraPosition(distance=35, elevation=40, azimuth=45)
         self._gl_widget.setBackgroundColor(pg.mkColor(30, 30, 40))
 
+        self._create_ground_plane()
+
         # 添加地面网格 - 32x32 米场景
         grid = gl.GLGridItem()
         grid.setSize(32, 32, 1)
         grid.setSpacing(2, 2, 1)  # 2米间隔
-        grid.setColor((100, 100, 100, 80))
+        grid.setColor((150, 158, 168, 155))
         self._gl_widget.addItem(grid)
 
         # 添加坐标轴
@@ -1545,6 +1564,31 @@ class SwarmView3D(QWidget):
 
         # 添加到布局
         self._view_layout.addWidget(self._gl_widget)
+
+    def _create_ground_plane(self):
+        """创建浅灰实体地面，放在网格下方避免 z-fighting。"""
+        half = 16.0
+        z = -0.015
+        vertices = np.array([
+            [-half, -half, z],
+            [half, -half, z],
+            [half, half, z],
+            [-half, half, z],
+        ], dtype=float)
+        faces = np.array([
+            [0, 1, 2],
+            [0, 2, 3],
+        ], dtype=np.uint32)
+        floor = gl.GLMeshItem(
+            meshdata=gl.MeshData(vertexes=vertices, faces=faces),
+            smooth=False,
+            color=(0.86, 0.88, 0.90, 1.0),
+            shader=None,
+            glOptions='opaque',
+            drawEdges=False,
+            drawFaces=True,
+        )
+        self._gl_widget.addItem(floor)
 
     def _create_boundary_fence(self):
         """创建边界围栏 - 四周 + 顶部天花板"""
@@ -1751,16 +1795,16 @@ class SwarmView3D(QWidget):
             if len(points) == 0:
                 continue
 
-            # 根据高度设置颜色渐变 (底部深色，顶部浅色)
+            # 根据高度设置颜色渐变。白色地面上避免使用白/浅灰点云。
             colors = np.zeros((len(points), 4))
             for i, pt in enumerate(points):
                 height_ratio = pt[2] / config['height']
-                # 棕色到橙色渐变
+                # 深棕到琥珀色渐变
                 colors[i] = [
-                    0.5 + 0.3 * height_ratio,  # R
-                    0.25 + 0.2 * height_ratio,  # G
-                    0.1,                         # B
-                    0.9                          # A
+                    0.42 + 0.22 * height_ratio,  # R
+                    0.20 + 0.16 * height_ratio,  # G
+                    0.06 + 0.04 * height_ratio,  # B
+                    0.95                         # A
                 ]
 
             scatter = gl.GLScatterPlotItem(
@@ -1787,15 +1831,15 @@ class SwarmView3D(QWidget):
             if len(points) == 0:
                 continue
 
-            # 灰色建筑物颜色
+            # 蓝灰色建筑物点云，避免在白色地面上显示成白点。
             colors = np.zeros((len(points), 4))
             for i, pt in enumerate(points):
                 height_ratio = pt[2] / config['height']
                 colors[i] = [
-                    0.4 + 0.15 * height_ratio,
-                    0.4 + 0.15 * height_ratio,
-                    0.45 + 0.15 * height_ratio,
-                    0.9
+                    0.18 + 0.10 * height_ratio,
+                    0.25 + 0.12 * height_ratio,
+                    0.34 + 0.16 * height_ratio,
+                    0.95
                 ]
 
             scatter = gl.GLScatterPlotItem(
@@ -1866,8 +1910,18 @@ class SwarmView3D(QWidget):
             drone = DroneModel(i, self._gl_widget, enable_lidar=False)
             self.drones.append(drone)
 
+    def _create_ground_platforms(self):
+        """创建地面平台：1 只机器狗 + 1 辆无人车。"""
+        self.robot_dogs = [RobotDogModel(i, self._gl_widget) for i in range(self.robot_dog_count)]
+        self.ugvs = [UGVModel(i, self._gl_widget) for i in range(self.ugv_count)]
+
     def _init_ground_positions(self):
-        """初始化地面位置 - 随机分布在安全区内"""
+        """初始化所有平台的地面位置。"""
+        self._init_drone_ground_positions()
+        self._init_ground_platform_positions()
+
+    def _init_drone_ground_positions(self):
+        """初始化无人机地面位置 - 随机分布在安全区内。"""
         import random
         positions = []
         for i in range(self.drone_count):
@@ -1883,6 +1937,15 @@ class SwarmView3D(QWidget):
             drone.set_target(pos)
             # 保存地面位置，用于垂直起降
             drone._ground_position = np.array(pos)
+
+    def _init_ground_platform_positions(self):
+        """初始化机器狗/无人车地面位置。"""
+        if self.robot_dogs:
+            self.robot_dogs[0].set_position((-3.8, -3.2, 0.0))
+            self.robot_dogs[0].set_yaw(math.radians(20))
+        if self.ugvs:
+            self.ugvs[0].set_position((3.8, -3.2, 0.0))
+            self.ugvs[0].set_yaw(math.radians(160))
 
     def _update_formation_lines(self):
         """更新编队连线 - 只在编队状态下显示"""
@@ -2029,6 +2092,14 @@ class SwarmView3D(QWidget):
                 if self.trajectory_enabled and drone.position[2] > 0.05:
                     drone.update_trajectory()
 
+        # 地面平台始终按纯仿真运动学更新，不参与无人机动力学/ROS。
+        for dog in self.robot_dogs:
+            dog.clamp_to_bounds(self.boundary_limit)
+            dog.step(dt)
+        for ugv in self.ugvs:
+            ugv.clamp_to_bounds(self.boundary_limit)
+            ugv.step(dt)
+
         self._update_formation_lines()
 
     def _update_status_display(self):
@@ -2063,8 +2134,34 @@ class SwarmView3D(QWidget):
         # 高度
         self._altitude_label.setText(f"高度: {self.current_altitude:.1f}m")
 
-        # 数量
-        self._count_label.setText(f"无人机: {self.drone_count}架")
+    def _get_device_positions(self) -> List[Dict]:
+        """返回三类平台当前空间位置，用于拓扑动画和事件选择。"""
+        devices = []
+        for i, drone in enumerate(self.drones):
+            devices.append({
+                "robot_id": f"UAV-{i + 1:02d}",
+                "platform": PlatformType.DRONE.value,
+                "name": f"无人机 {i + 1}",
+                "position": np.array(drone.position, dtype=float),
+                "color": DroneModel.COLORS[i % len(DroneModel.COLORS)],
+            })
+        for i, dog in enumerate(self.robot_dogs):
+            devices.append({
+                "robot_id": f"DOG-{i + 1:02d}",
+                "platform": PlatformType.ROBOT_DOG.value,
+                "name": f"机器狗 {i + 1}",
+                "position": np.array(dog.position, dtype=float),
+                "color": RobotDogModel.PANEL_COLOR[:3],
+            })
+        for i, ugv in enumerate(self.ugvs):
+            devices.append({
+                "robot_id": f"UGV-{i + 1:02d}",
+                "platform": PlatformType.UGV.value,
+                "name": f"{i + 1}号车",
+                "position": np.array(ugv.position, dtype=float),
+                "color": (0.15, 0.75, 0.85),
+            })
+        return devices
 
     def _generate_formation_positions(self, formation: FormationType, altitude: float) -> List[Tuple]:
         """生成编队位置"""
@@ -2116,9 +2213,40 @@ class SwarmView3D(QWidget):
             self._execute_emergency()
         elif command == SwarmCommand.MOVE_FORWARD.value or command == "move_forward":
             self._execute_move_forward(5.0)  # 向前飞行5米
+        elif command == SwarmCommand.RTL.value or command == "rtl":
+            self._execute_rtl()
 
         self._update_status_display()
         self.command_executed.emit(command)
+
+    @Slot(str, str)
+    def execute_platform_command(self, platform: str, command: str):
+        """
+        执行指定平台的本地仿真指令。
+
+        Args:
+            platform: drone / robot_dog / ugv
+            command: 对应平台指令字符串
+        """
+        if platform == PlatformType.DRONE.value:
+            self.execute_command(command)
+            self._last_platform_command[platform] = command
+            return
+
+        if platform == PlatformType.ROBOT_DOG.value:
+            for dog in self.robot_dogs:
+                dog.execute_command(command)
+            self._last_platform_command[platform] = command
+        elif platform == PlatformType.UGV.value:
+            for ugv in self.ugvs:
+                ugv.execute_command(command)
+            self._last_platform_command[platform] = command
+        else:
+            logger.warning(f"Unknown platform command target: {platform}")
+            return
+
+        self._update_status_display()
+        self.command_executed.emit(f"{platform}:{command}")
 
     @Slot(str, int)
     def change_formation(self, formation: str, drone_count: int = None):
@@ -2261,9 +2389,24 @@ class SwarmView3D(QWidget):
         self.is_flying = False
         self.in_formation = False
         self.current_altitude = 0.0
-        self._init_ground_positions()
+        self._init_drone_ground_positions()
         # 清除所有轨迹
         self.clear_all_trajectories()
+
+    def _execute_rtl(self):
+        """全员归建 - 无人机返回初始起降点，地面平台由上层分别停止/停车。"""
+        self.in_formation = False
+        self.center = (0.0, 0.0)
+
+        for drone in self.drones:
+            ground = getattr(drone, "_ground_position", np.array([0.0, 0.0, 0.0]))
+            if self.is_flying:
+                target = (ground[0], ground[1], max(self.current_altitude, self.base_altitude))
+            else:
+                target = (ground[0], ground[1], 0.0)
+            drone.set_target(target)
+
+        self.current_formation = FormationType.CIRCLE
 
     def _update_drone_count(self, count: int):
         """更新无人机数量"""
@@ -2408,3 +2551,132 @@ class SwarmView3D(QWidget):
                 'speed': speed
             })
         return status_list
+
+    def get_ground_platform_status(self) -> list:
+        """
+        获取地面平台状态。
+
+        Returns:
+            状态列表 [{'platform', 'name', 'position', 'status', ...}, ...]
+        """
+        statuses = []
+        for dog in self.robot_dogs:
+            statuses.append(dog.get_status())
+        for ugv in self.ugvs:
+            statuses.append(ugv.get_status())
+        return statuses
+
+    def get_device_status_list(self) -> list:
+        """
+        获取 10 台平台的并发监控状态。
+
+        每条状态包含在线、心跳、电量、位置等字段，用于设备状态列表。
+        """
+        import random
+
+        now = time.time()
+        statuses = []
+        devices = self._get_device_positions()
+
+        for idx, device in enumerate(devices):
+            platform = device["platform"]
+            pos = device["position"]
+
+            if platform == PlatformType.DRONE.value:
+                obj = self.drones[idx]
+                if not hasattr(obj, "_sim_battery"):
+                    obj._sim_battery = 92 + random.randint(0, 8)
+                if self.is_flying and random.random() < 0.02:
+                    obj._sim_battery = max(15, obj._sim_battery - 1)
+                status = "飞行中" if self.is_flying else "在线待命"
+                speed = float(np.linalg.norm(getattr(obj, "_smoothed_velocity", np.zeros(3))))
+                battery = obj._sim_battery
+            elif platform == PlatformType.ROBOT_DOG.value:
+                dog = self.robot_dogs[0]
+                if not hasattr(dog, "_sim_battery"):
+                    dog._sim_battery = 88
+                status = f"在线/{dog.get_status()['status']}"
+                speed = dog.get_status()["speed"]
+                battery = dog._sim_battery
+            else:
+                ugv = self.ugvs[0]
+                if not hasattr(ugv, "_sim_battery"):
+                    ugv._sim_battery = 90
+                status = f"在线/{ugv.get_status()['status']}"
+                speed = ugv.get_status()["speed"]
+                battery = ugv._sim_battery
+
+            statuses.append({
+                "id": idx,
+                "robot_id": device["robot_id"],
+                "platform": platform,
+                "name": device["name"],
+                "position": (pos[0], pos[1], pos[2]),
+                "status": status,
+                "online": True,
+                "heartbeat": int(now * 2 + idx) % 2 == 0,
+                "battery": battery,
+                "signal": 96 - min(20, int(np.linalg.norm(pos[:2]))),
+                "speed": speed,
+                "color": device["color"],
+            })
+        return statuses
+
+    def clear_topology(self):
+        """清除拓扑连线动画。"""
+        self._topology_timer.stop()
+        for line in self._topology_lines:
+            self._gl_widget.removeItem(line)
+        self._topology_lines.clear()
+        self._topology_targets = []
+        self._topology_source = None
+        self._topology_step = 0
+
+    def start_topology_animation(self):
+        """启动以 1 号车为中心的连续辐射拓扑动画。"""
+        self.clear_topology()
+
+        devices = self._get_device_positions()
+        source = next(
+            (device for device in devices if device["robot_id"] == "UGV-01"),
+            devices[0] if devices else None
+        )
+        if source is None:
+            return
+
+        self._topology_source = source
+        self._topology_targets = [
+            device for device in devices
+            if device["robot_id"] != source["robot_id"]
+        ]
+        self._topology_step = 0
+        self._topology_timer.start()
+
+    def _advance_topology_animation(self):
+        """拓扑动画每一帧增加一条从 1 号车向外的链路。"""
+        if self._topology_source is None or self._topology_step >= len(self._topology_targets):
+            self._topology_timer.stop()
+            return
+
+        target = self._topology_targets[self._topology_step]
+        src = self._topology_source["position"].copy()
+        dst = target["position"].copy()
+        src[2] = max(src[2], 0.18)
+        dst[2] = max(dst[2], 0.18)
+
+        line = gl.GLLinePlotItem(
+            pos=np.array([src, dst]),
+            color=(0.0, 0.85, 1.0, 0.85),
+            width=3,
+            antialias=True,
+        )
+        self._gl_widget.addItem(line)
+        self._topology_lines.append(line)
+        self._topology_step += 1
+
+        if self._topology_step >= len(self._topology_targets):
+            self._topology_timer.stop()
+
+    def get_topology_progress(self) -> tuple:
+        """返回拓扑动画进度 (已连接数, 总连接数)。"""
+        return self._topology_step, len(self._topology_targets)

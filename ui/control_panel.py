@@ -243,8 +243,10 @@ class ControlPanel(QWidget):
             return
         # 简化状态显示
         status_map = {
-            "正在加载 Whisper 模型...": "加载模型...",
-            "Whisper 模型加载完成": "模型就绪",
+            "正在加载语音模型...": "加载模型...",
+            "语音模型加载完成": "模型就绪",
+            "正在加载 Whisper 模型...": "加载模型...",  # legacy message
+            "Whisper 模型加载完成": "模型就绪",  # legacy message
             "正在录音...": "录音中...",
             "录音为空": "录音为空",
             "正在识别...": "识别中...",

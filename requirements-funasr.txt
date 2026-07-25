@@ -1,0 +1,4 @@
+# Optional larger ASR backend.  Use this only when
+# voice.asr_engine is set to "funasr" in config/config.yaml.
+-r requirements.txt
+funasr>=1.0.0

@@ -4,13 +4,13 @@
 多模态检测器 - 主入口文件
 
 一个基于 PySide6 + OpenCV 的桌面应用，集成了:
-- 语音识别 (FunASR Paraformer-zh-streaming)
+- 语音识别 (SenseVoice-Small；可选 FunASR Paraformer-zh-streaming)
 - 手势识别 (MediaPipe Hands)
 - 图像识别 (YOLOv8)
 - 触屏指令检测
 
 运行环境:
-- macOS 12+ / Ubuntu 20.04+ / Windows 10+
+- macOS 12+ / Ubuntu 22.04+ / Windows 10+
 - Python 3.10
 - CUDA / MPS / CPU 自动选择（无 GPU 时自动退回 CPU）
 
@@ -19,7 +19,7 @@
     pip install torch torchvision torchaudio
     pip install -r requirements-macos.txt
 
-    # Linux (CUDA)
+    # Linux (CUDA, optional)
     conda env create -f environment.yml
     conda activate multimodal
 

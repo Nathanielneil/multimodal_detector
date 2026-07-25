@@ -26,10 +26,13 @@ dependencies = [
     "opencv-python>=4.8.0",
     "numpy>=1.24.0",
     "mediapipe>=0.10.0",
-    "openai-whisper>=20231117",
+    # SenseVoice-Small is the default ASR engine.  FunASR is an optional
+    # extra because it downloads a substantially larger model/runtime.
+    "sherpa-onnx>=1.10.0",
     "ultralytics>=8.0.0",
     "pyqtgraph>=0.13.0",
     "PyOpenGL>=3.1.0",
+    "PyOpenGL_accelerate>=3.1.0",
     "scipy>=1.10.0",
     "Pillow>=9.0.0",
     "PyYAML>=6.0",
@@ -46,6 +49,9 @@ dev = [
     "flake8>=6.0.0",
     "mypy>=1.0.0",
 ]
+funasr = [
+    "funasr>=1.0.0",
+]
 ros = [
     "rospy",
     "std_msgs",
@@ -61,7 +67,15 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["config*", "detectors*", "ui*", "utils*", "workers*", "ros_bridge*"]
+include = ["assets*", "config*", "detectors*", "ui*", "utils*", "workers*", "ros_bridge*"]
+
+[tool.setuptools.package-data]
+assets = [
+    "models/**/*.obj",
+    "models/**/*.json",
+    "models/**/*.md",
+    "models/**/*.txt",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

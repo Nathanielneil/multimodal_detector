@@ -1,24 +1,27 @@
-# 多模态检测器依赖
-# 安装: pip install -r requirements.txt
+# Runtime dependencies for Ubuntu 22.04 (Python 3.10/3.11).
+#
+# Install PyTorch separately first when using an NVIDIA CUDA wheel.  This
+# file deliberately does not pin torch so pip cannot replace a CUDA build
+# with a CPU build.  Ultralytics will install a compatible CPU build when
+# running the CPU-only setup documented in docs/UBUNTU22_DEPLOY.md.
 
-# GUI 框架
+# GUI and rendering
 PySide6>=6.5.0
+pyqtgraph>=0.13.0
+PyOpenGL>=3.1.0
+PyOpenGL_accelerate>=3.1.0
 
-# 计算机视觉
+# Computer vision and numerical processing
 opencv-python>=4.8.0
-
-# 语音识别 (FunASR)
-funasr>=1.0.0
-
-# 音频录制
-sounddevice>=0.4.6
+numpy>=1.24.0
 scipy>=1.10.0
+Pillow>=9.0.0
+PyYAML>=6.0
 
-# 手势识别 (MediaPipe)
+# Camera/audio and visual detectors
+sounddevice>=0.4.6
 mediapipe>=0.10.0
-
-# 物体检测 (YOLOv8)
 ultralytics>=8.0.0
 
-# 基础依赖
-numpy>=1.24.0
+# Default ASR engine (SenseVoice-Small, downloaded on first use)
+sherpa-onnx>=1.10.0

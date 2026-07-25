@@ -1,0 +1,28 @@
+{
+  "name": "Unitree Go2 demo mesh",
+  "source": "https://github.com/unitreerobotics/unitree_mujoco/tree/main/unitree_robots/go2",
+  "license": "BSD-3-Clause",
+  "optimization": "visual-only OBJ, 2mm vertex clustering, degenerate faces removed",
+  "scale": 1.35,
+  "rotation_deg": [0, 0, 0],
+  "offset": [0, 0, 0],
+  "smooth": false,
+  "parts": [
+    {
+      "mesh": "go2_black.obj",
+      "color": [0.72, 0.74, 0.76, 1.0]
+    },
+    {
+      "mesh": "go2_white.obj",
+      "color": [0.96, 0.97, 0.94, 1.0]
+    },
+    {
+      "mesh": "go2_gray.obj",
+      "color": [0.86, 0.88, 0.88, 1.0]
+    },
+    {
+      "mesh": "go2_metal.obj",
+      "color": [0.92, 0.93, 0.91, 1.0]
+    }
+  ]
+}

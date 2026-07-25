@@ -40,6 +40,7 @@ class HistoryTable(QWidget):
         "gesture": "手势识别",
         "image": "图像识别",
         "touch": "触屏指令",
+        "simulation": "仿真指令",
     }
 
     def __init__(self, parent=None):
@@ -76,6 +77,7 @@ class HistoryTable(QWidget):
         self._modal_filter.addItem("手势", "gesture")
         self._modal_filter.addItem("图像", "image")
         self._modal_filter.addItem("触屏", "touch")
+        self._modal_filter.addItem("仿真", "simulation")
         self._modal_filter.setToolTip("按模态类型筛选")
         self._modal_filter.currentIndexChanged.connect(self._apply_filter)
         filter_layout.addWidget(self._modal_filter, 1)
@@ -167,7 +169,8 @@ class HistoryTable(QWidget):
         # 提取关键信息
         key_fields = [
             "primary_object", "gesture_type", "event_type",
-            "language", "handedness", "position"
+            "language", "handedness", "position",
+            "platform_label", "command_label", "mode"
         ]
 
         parts = []
@@ -288,6 +291,7 @@ class HistoryTable(QWidget):
             "手势识别": "gesture",
             "图像识别": "image",
             "触屏指令": "touch",
+            "仿真指令": "simulation",
         }
 
         visible_count = 0

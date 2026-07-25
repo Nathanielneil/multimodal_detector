@@ -1,0 +1,12 @@
+# CPU-only Ubuntu 22.04 environment.
+# For an NVIDIA host, use environment.yml instead or install the matching
+# CUDA PyTorch wheel before installing requirements.txt.
+name: multimodal-cpu
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - -r requirements.txt

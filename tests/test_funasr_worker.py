@@ -37,6 +37,7 @@ def worker(qtbot, mock_funasr_model, fake_funasr_module):
     w = FunASRWorker()
     assert w.initialize() is True
     w.start()
+    w.start_session()
     yield w
     w.release()
     w.wait(2000)  # run() exits on _STOP sentinel
@@ -82,6 +83,7 @@ def test_queue_overflow_drops_oldest_not_eos(qtbot, mock_funasr_model):
         from workers.funasr_worker import FunASRWorker
         w = FunASRWorker()
         w.initialize()
+        w.start_session()
         # Do NOT start the worker thread — test queue state directly
         chunk = np.zeros(100, dtype=np.float32)
         for _ in range(22):

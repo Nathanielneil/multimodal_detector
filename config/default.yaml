@@ -38,10 +38,11 @@ voice:
   model_name: "small"  # tiny, base, small, medium, large
   language: "zh"
   sample_rate: 16000
-  # Audio device settings
-  audio_device: 0    # AirPods Pro (24000Hz)
+  # Audio device settings: null uses the system default input device.
+  # Set an integer device ID only after checking `python -m sounddevice`.
+  audio_device: null
   # Confidence threshold (0.0-1.0)
-  threshold: 0.0  # Whisper has built-in filtering
+  threshold: 0.0  # ASR workers currently emit final results at confidence 1.0
 
 # =============================================================================
 # Gesture Detector Settings
@@ -86,9 +87,11 @@ visualization:
   arena_size: 32  # meters
   boundary_margin: 1.0
   # Drone settings
-  drone_count: 6
-  max_drones: 12
-  min_drones: 1
+  drone_count: 8
+  max_drones: 8
+  min_drones: 8
+  robot_dog_count: 1
+  ugv_count: 1
   # Trajectory settings
   trajectory_buffer_size: 200
   # APF (Artificial Potential Field) settings

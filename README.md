@@ -3,7 +3,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6-green.svg)](https://doc.qt.io/qtforpython/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-2.14.0-brightgreen.svg)]()
+[![Version](https://img.shields.io/badge/version-2.13.0-brightgreen.svg)]()
 
 基于 **PySide6 + OpenCV** 的多模态人机交互系统，集成语音识别、手势识别、图像识别和触屏指令检测四种交互模态，支持无人机集群的 3D 可视化控制和 ROS 集成。
 
@@ -17,6 +17,7 @@
 - [系统架构](#系统架构)
 - [系统要求](#系统要求)
 - [安装指南](#安装指南)
+- [Ubuntu 22.04 部署文档](docs/UBUNTU22_DEPLOY.md)
 - [快速开始](#快速开始)
 - [项目结构](#项目结构)
 - [配置说明](#配置说明)
@@ -33,7 +34,7 @@
 
 | 模态 | 技术方案 | 功能描述 |
 |------|----------|----------|
-| 🎤 **语音识别** | OpenAI Whisper | 实时语音转文字，支持中英文指令识别 |
+| 🎤 **语音识别** | SenseVoice-Small（可选 FunASR） | 实时语音转文字，支持中英文指令识别 |
 | 🖐️ **手势识别** | MediaPipe Hands | 21 点手部关键点检测，识别 8+ 种手势 |
 | 📷 **图像识别** | YOLOv8 | 80+ 类物体实时检测，可自定义模型 |
 | 👆 **触屏指令** | OpenCV | 支持点击、双击、拖拽、形状绘制 |
@@ -80,7 +81,7 @@ graph TB
         subgraph Right["3D 集群视图"]
             SV[Swarm View 3D]
             OGL[OpenGL Scene]
-            DR[6x Drones]
+            DR[8x Drones + Ground Platforms]
         end
     end
 
@@ -145,59 +146,55 @@ flowchart LR
 
 ### 软件要求
 
-- **操作系统**: Ubuntu 20.04 / 22.04 LTS
+- **操作系统**: Ubuntu 22.04 LTS（推荐）
 - **Python**: 3.10 或 3.11
-- **CUDA**: 11.8+ (可选，用于 GPU 加速)
-- **ROS**: Noetic (可选，用于 ROS 集成)
+- **CUDA**: 可选；RTX 50 系列推荐 PyTorch `cu128` wheel
+- **ROS**: ROS1 Noetic（可选；Ubuntu 22.04 建议使用容器或关闭 ROS）
 
 ## 安装指南
 
-### 方式一: Conda 环境 (推荐)
+### Ubuntu 22.04 部署（推荐）
+
+完整步骤见 [`docs/UBUNTU22_DEPLOY.md`](docs/UBUNTU22_DEPLOY.md)。最小安装流程：
 
 ```bash
-# 克隆仓库
-git clone https://github.com/Nathanielneil/multimodal_detector.git
-cd multimodal_detector
+sudo apt install -y git ffmpeg libgl1 libglib2.0-0 libportaudio2 portaudio19-dev
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip wheel
+python -m pip install -r requirements.txt
+python scripts/verify_install.py
+```
 
-# 创建并激活环境
-conda env create -f environment.yml
+### Conda 环境
+
+```bash
+conda env create -f environment.yml       # NVIDIA 环境骨架
 conda activate multimodal
-
-# 验证安装
-python -c "import PySide6; import cv2; import whisper; print('安装成功!')"
+python -m pip install torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu128  # RTX 50 系列
+python -m pip install -r requirements.txt
+# CPU-only: conda env create -f environment-ubuntu22-cpu.yml
 ```
 
-### 方式二: pip 安装
+### pip 开发安装
 
 ```bash
-# 创建虚拟环境
-python -m venv venv
-source venv/bin/activate
-
-# 安装依赖
-pip install -e .
-
-# 安装开发依赖 (可选)
-pip install -e ".[dev]"
+python -m pip install -e .
+python -m pip install -e ".[dev]"  # 可选
 ```
 
-### 方式三: ROS 集成安装
+FunASR 是可选的大型语音后端：
 
 ```bash
-# 安装 ROS 依赖
-pip install -e ".[ros]"
-
-# 编译 ROS 工作空间
-cd catkin_ws
-catkin_make
-source devel/setup.bash
+python -m pip install -r requirements-funasr.txt
 ```
 
 ### GPU 加速配置 (可选)
 
 ```bash
-# 安装 CUDA 版本的 PyTorch
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# RTX 50 系列安装 CUDA 12.8 wheel
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # 验证 CUDA
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
@@ -269,8 +266,9 @@ graph LR
 |------|------|----------|
 | `config/` | 配置模块 | `config.py`, `default.yaml` |
 | `detectors/` | 检测器模块 | `voice_detector.py`, `gesture_detector.py`, `image_detector.py`, `touch_detector.py` |
-| `ui/` | UI 组件 | `main_window.py`, `video_widget.py`, `swarm_view_3d.py` |
-| `workers/` | 后台线程 | `camera_worker.py`, `gesture_worker.py` |
+| `ui/` | UI 组件 | `main_window.py`, `video_widget.py`, `swarm_view_3d.py`, `ground_vehicles.py` |
+| `workers/` | 后台线程 | `camera_worker.py`, `gesture_worker.py`, `image_worker.py`, `sensevoice_worker.py`, `funasr_worker.py` |
+| `assets/` | 3D 模型资源 | Unitree Go2、Clearpath Husky OBJ 模型 |
 | `ros_bridge/` | ROS 桥接 | `ros_bridge.py` |
 | `utils/` | 工具模块 | `logger.py` |
 | `tests/` | 测试用例 | `test_config.py`, `test_detectors.py` |
@@ -285,7 +283,7 @@ graph LR
 ```yaml
 app:
   name: "Multimodal Detector"
-  version: "2.14.0"
+  version: "2.13.0"
   language: "zh"  # zh, en
 ```
 
@@ -317,7 +315,9 @@ image:
 ```yaml
 visualization:
   arena_size: 32        # 场地大小 (米)
-  drone_count: 6        # 无人机数量
+  drone_count: 8        # 无人机数量
+  robot_dog_count: 1    # 机器狗数量
+  ugv_count: 1          # 无人车数量
   apf_enabled: true     # APF 避障
 ```
 
@@ -343,7 +343,7 @@ logging:
 |------|------|----------|
 | **左栏 - 控制面板** | 模态开关与参数控制 | 启动摄像头、模态复选框、录音按钮、阈值滑块 |
 | **中栏 - 视频显示** | 实时画面与检测叠加 | 摄像头画面、手势轨迹、物体框选、语音波形 |
-| **右栏 - 3D 视图** | 无人机集群可视化 | OpenGL 场景、6架无人机、编队控制按钮 |
+| **右栏 - 3D 视图** | 多平台可视化与控制 | OpenGL 场景、8架无人机、机器狗、无人车 |
 | **底部 - 历史记录** | 检测结果时间线 | 时间、模态、命令、置信度 |
 
 **检测历史示例：**
@@ -511,10 +511,10 @@ sudo apt install v4l-utils
 v4l2-ctl --list-devices
 ```
 
-### Q: Whisper 模型下载失败
+### Q: 语音模型下载失败
 
 ```yaml
-# 配置代理 (config/config.yaml)
+# 配置代理 (config/config.yaml)，SenseVoice/YOLO 首次运行会下载模型
 proxy:
   enabled: true
   http: "http://127.0.0.1:7890"
@@ -530,7 +530,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 # 重新安装 PyTorch CUDA 版本
 pip uninstall torch torchvision
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
 ### Q: 麦克风设备选择
@@ -593,7 +593,8 @@ python main.py
 
 ## 致谢
 
-- [OpenAI Whisper](https://github.com/openai/whisper) - 语音识别
+- [sherpa-onnx SenseVoice](https://github.com/k2-fsa/sherpa-onnx) - 默认语音识别
+- [FunASR](https://github.com/modelscope/FunASR) - 可选流式语音识别
 - [MediaPipe](https://mediapipe.dev/) - 手势识别
 - [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) - 物体检测
 - [PySide6](https://doc.qt.io/qtforpython/) - GUI 框架

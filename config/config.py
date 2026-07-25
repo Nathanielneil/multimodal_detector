@@ -280,6 +280,16 @@ class Config:
                 f"Must be one of: {valid_voice_models}"
             )
 
+        # Validate ASR engine.  The default SenseVoice path is lightweight and
+        # CPU-friendly; FunASR remains available as an optional engine.
+        valid_asr_engines = ["sensevoice", "funasr"]
+        asr_engine = self.get("voice.asr_engine")
+        if asr_engine and asr_engine not in valid_asr_engines:
+            errors.append(
+                f"Invalid voice.asr_engine '{asr_engine}'. "
+                f"Must be one of: {valid_asr_engines}"
+            )
+
         # Validate gesture model complexity
         gesture_complexity = self.get("gesture.model_complexity")
         if gesture_complexity is not None and gesture_complexity not in [0, 1, 2]:

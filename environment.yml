@@ -1,38 +1,15 @@
-# Conda environment configuration for multimodal detector
-# NOTE: This file targets Linux + CUDA environments.
-#       For macOS, use requirements-macos.txt instead:
-#           pip install torch torchvision torchaudio
-#           pip install -r requirements-macos.txt
+# Conda bootstrap environment for Ubuntu 22.04 + NVIDIA GPU.
+#
+# PyTorch is intentionally installed after this environment is created. That
+# lets each machine select a wheel compatible with its GPU generation. RTX 50
+# series hosts should use the cu128 command in docs/UBUNTU22_DEPLOY.md.
+# For CPU-only hosts use environment-ubuntu22-cpu.yml.
 # Usage: conda env create -f environment.yml
 #        conda activate multimodal
 name: multimodal
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
   - defaults
 dependencies:
   - python=3.10
-  # PyTorch with CUDA support (for Whisper and YOLO)
-  - pytorch>=2.0
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=11.8
-  # Basic scientific computing
-  - numpy>=1.24
-  - scipy>=1.10
-  # Audio processing
   - pip
-  - pip:
-    # GUI framework
-    - PySide6>=6.5.0
-    # Computer Vision
-    - opencv-python>=4.8.0
-    # Voice Recognition (OpenAI Whisper)
-    - openai-whisper>=20231117
-    # Audio recording
-    - sounddevice>=0.4.6
-    # Gesture Recognition (Google MediaPipe)
-    - mediapipe>=0.10.0
-    # Object Detection (YOLOv8)
-    - ultralytics>=8.0.0
