@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QVBoxLayout, QHBoxLayout,
     QMessageBox, QApplication, QFrame, QLabel, QScrollArea,
-    QComboBox, QPushButton, QProgressBar
+    QComboBox, QPushButton, QProgressBar, QFileDialog
 )
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import (
@@ -1126,6 +1126,7 @@ class MainWindow(QMainWindow):
         self._control_panel.record_clicked.connect(self._on_record_clicked)
         self._control_panel.camera_changed.connect(self._on_camera_changed)
         self._control_panel.refresh_cameras_clicked.connect(self._refresh_cameras)
+        self._control_panel.load_map_clicked.connect(self._on_load_map_clicked)
 
         # 视频区域鼠标点击
         self._video_widget.mouse_clicked.connect(self._on_video_click)
@@ -1653,6 +1654,27 @@ class MainWindow(QMainWindow):
                 self, "摄像头扫描",
                 "未找到可用的摄像头设备。\n请检查摄像头连接。"
             )
+
+    @Slot()
+    def _on_load_map_clicked(self):
+        """处理加载点云地图按钮点击"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择点云地图文件", "", "点云文件 (*.pcd)"
+        )
+        if not file_path:
+            return
+
+        if not hasattr(self, '_swarm_view_3d'):
+            return
+
+        if self._swarm_view_3d.load_point_cloud_map(file_path):
+            self.statusBar().showMessage(f"点云地图已加载: {file_path}", 3000)
+        else:
+            QMessageBox.warning(
+                self, "地图加载失败",
+                f"无法加载点云地图:\n{file_path}\n\n请检查文件格式是否为 PCD v0.7 (ASCII/binary)。"
+            )
+            self.statusBar().showMessage("点云地图加载失败", 3000)
 
     @Slot(str, bool)
     def _on_modal_toggled(self, modal_name: str, enabled: bool):

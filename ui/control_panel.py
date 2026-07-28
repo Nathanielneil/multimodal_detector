@@ -24,6 +24,7 @@ class ControlPanel(QWidget):
         record_clicked: 录音按钮点击 (is_recording: bool)
         camera_changed: 摄像头切换 (camera_id: int)
         refresh_cameras_clicked: 刷新摄像头列表按钮点击
+        load_map_clicked: 加载点云地图按钮点击
     """
 
     # 信号定义
@@ -35,6 +36,7 @@ class ControlPanel(QWidget):
     record_clicked = Signal(bool)
     camera_changed = Signal(int)
     refresh_cameras_clicked = Signal()
+    load_map_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -96,6 +98,17 @@ class ControlPanel(QWidget):
         camera_layout.addWidget(self.btn_refresh_cameras)
 
         layout.addWidget(camera_group)
+
+        # ===== 3D 场景地图组 =====
+        map_group = QGroupBox("3D 场景地图")
+        map_layout = QVBoxLayout(map_group)
+
+        self.btn_load_map = QPushButton("加载点云地图...")
+        self.btn_load_map.setProperty("class", "secondary")
+        self.btn_load_map.setToolTip("选择 .pcd 点云文件作为 3D 场景的先验地图")
+        map_layout.addWidget(self.btn_load_map)
+
+        layout.addWidget(map_group)
 
         # ===== 跟踪算法组 =====
         algo_group = QGroupBox("跟踪设置")
@@ -224,6 +237,9 @@ class ControlPanel(QWidget):
         # 摄像头选择
         self.combo_camera.currentIndexChanged.connect(self._on_camera_changed)
         self.btn_refresh_cameras.clicked.connect(self.refresh_cameras_clicked.emit)
+
+        # 点云地图加载
+        self.btn_load_map.clicked.connect(self.load_map_clicked.emit)
 
     def _on_record_toggled(self, checked: bool):
         """处理录音按钮切换"""

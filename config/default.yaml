@@ -97,6 +97,13 @@ visualization:
   # APF (Artificial Potential Field) settings
   apf_enabled: true
   apf_smoothing: 0.3  # EMA alpha
+  # 自定义先验点云地图 (相对项目根目录)。留空或文件不存在时回退到程序化网格地面。
+  point_cloud_map: "global_map_ref_uav1.pcd"
+  point_cloud_max_points: 50000
+  point_cloud_point_size: 2.0
+  # 加载点云地图后的相机初始距离 (米)。与点云整体尺寸无关，聚焦机器人集群
+  # 活动区域，避免室内点云 (如地下车库) 过大时集群被缩小到看不见。
+  point_cloud_camera_distance: 20.0
 
 # =============================================================================
 # ROS Bridge Settings

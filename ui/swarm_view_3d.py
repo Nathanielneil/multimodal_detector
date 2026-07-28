@@ -11,6 +11,7 @@
 import math
 import time
 import numpy as np
+from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 from collections import deque
@@ -23,6 +24,7 @@ import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 from config import config
 from utils.logger import get_logger
+from utils.pcd_loader import load_pcd_xyz, downsample_points, estimate_floor_height
 from .ground_vehicles import PlatformType, RobotDogModel, UGVModel
 
 logger = get_logger(__name__)
@@ -1454,6 +1456,13 @@ class SwarmView3D(QWidget):
         self._topology_source: Optional[Dict] = None
         self._topology_step = 0
 
+        # 点云地图 (程序化网格作为默认 fallback)
+        self._ground_grid_item: Optional[gl.GLGridItem] = None
+        self._ground_floor_item: Optional[gl.GLMeshItem] = None
+        self._boundary_fence_items: List = []
+        self._point_cloud_item: Optional[gl.GLScatterPlotItem] = None
+        self._point_cloud_map_path: Optional[str] = None
+
         # 静态障碍物
         self.obstacles: List[gl.GLScatterPlotItem] = []
         self.obstacle_configs: List[Dict] = []  # 障碍物配置 (用于碰撞检测)
@@ -1476,6 +1485,11 @@ class SwarmView3D(QWidget):
         self._create_ground_platforms()
         self._init_ground_positions()
         self._update_status_display()
+
+        # 按配置尝试加载先验点云地图，失败则静默保留程序化网格
+        configured_map = config.get("visualization.point_cloud_map", "")
+        if configured_map:
+            self.load_point_cloud_map(configured_map)
 
     def _setup_ui(self):
         """设置界面"""
@@ -1550,12 +1564,13 @@ class SwarmView3D(QWidget):
 
         self._create_ground_plane()
 
-        # 添加地面网格 - 32x32 米场景
+        # 添加地面网格 - 32x32 米场景 (加载点云地图后会被移除)
         grid = gl.GLGridItem()
         grid.setSize(32, 32, 1)
         grid.setSpacing(2, 2, 1)  # 2米间隔
         grid.setColor((150, 158, 168, 155))
         self._gl_widget.addItem(grid)
+        self._ground_grid_item = grid
 
         # 添加坐标轴
         axis = gl.GLAxisItem()
@@ -1589,9 +1604,137 @@ class SwarmView3D(QWidget):
             drawFaces=True,
         )
         self._gl_widget.addItem(floor)
+        self._ground_floor_item = floor
+
+    def _remove_ground_plane_items(self):
+        """移除程序化网格/地面，改用点云渲染场景背景。"""
+        if self._ground_grid_item is not None:
+            self._gl_widget.removeItem(self._ground_grid_item)
+            self._ground_grid_item = None
+        if self._ground_floor_item is not None:
+            self._gl_widget.removeItem(self._ground_floor_item)
+            self._ground_floor_item = None
+
+    def _remove_point_cloud_item(self):
+        """移除当前点云地图 GL item (若存在)。"""
+        if self._point_cloud_item is not None:
+            self._gl_widget.removeItem(self._point_cloud_item)
+            self._point_cloud_item = None
+
+    def _clear_procedural_obstacles(self):
+        """
+        移除程序化静态/动态障碍物。
+
+        这些障碍物的坐标是为旧的 32x32 程序化场景硬编码的，加载真实点云
+        地图后不会与地图几何对齐，继续保留会显示成与地图无关的漂浮物体。
+        """
+        for scatter in self.obstacles:
+            self._gl_widget.removeItem(scatter)
+        self.obstacles.clear()
+        self.obstacle_configs.clear()
+
+        for obs in self.dynamic_obstacles:
+            if obs.scatter is not None:
+                self._gl_widget.removeItem(obs.scatter)
+        self.dynamic_obstacles.clear()
+
+    def load_point_cloud_map(self, path: str) -> bool:
+        """
+        加载自定义先验点云地图 (.pcd)，替换程序化网格地面，并按点云的
+        水平尺寸自适应放大飞行边界围栏与相机视野。
+
+        解析/校验阶段的任何失败都不会修改当前场景 (保留程序化网格或
+        之前已加载的点云)，只记录 warning 并返回 False，避免崩溃。
+
+        Args:
+            path: PCD 文件路径，相对路径基于项目根目录解析
+
+        Returns:
+            bool: 是否加载并替换成功
+        """
+        resolved_path = Path(path)
+        if not resolved_path.is_absolute():
+            resolved_path = Path(__file__).resolve().parent.parent / resolved_path
+
+        try:
+            points = load_pcd_xyz(resolved_path)
+            if len(points) == 0:
+                raise ValueError(f"点云文件不包含任何点: {resolved_path}")
+
+            max_points = config.get("visualization.point_cloud_max_points", 50000)
+            points = downsample_points(points, max_points).copy()
+
+            # 水平面 (X/Y) 做包围盒居中平移
+            min_xy = points[:, :2].min(axis=0)
+            max_xy = points[:, :2].max(axis=0)
+            center_xy = (min_xy + max_xy) / 2.0
+            points[:, 0] -= center_xy[0]
+            points[:, 1] -= center_xy[1]
+
+            # Z 轴对齐地面：估算点云自身的地面高度并平移到 z=0，
+            # 否则机器人集群 (从场景 z≈0 起飞/站立) 会与点云地面对不齐、显得悬空。
+            floor_z = estimate_floor_height(points)
+            points[:, 2] -= floor_z
+
+            half_extent = float((max_xy - min_xy).max() / 2.0)
+            new_boundary_limit = max(half_extent, 5.0) + 2.0  # 留 2m 缓冲
+        except Exception as exc:
+            logger.warning("加载点云地图失败，保留当前场景: %s (%s)", path, exc)
+            return False
+
+        # 解析成功，开始替换场景内容
+        self._remove_point_cloud_item()
+        self._remove_ground_plane_items()
+        self._clear_procedural_obstacles()
+
+        z_min = float(points[:, 2].min())
+        z_max = float(points[:, 2].max())
+        height_ratio = (points[:, 2] - z_min) / max(z_max - z_min, 1e-3)
+        colors = np.empty((len(points), 4), dtype=np.float32)
+        colors[:, 0] = 0.20 + 0.45 * height_ratio
+        colors[:, 1] = 0.32 + 0.35 * height_ratio
+        colors[:, 2] = 0.55 + 0.30 * (1.0 - height_ratio)
+        colors[:, 3] = 0.9
+
+        point_size = config.get("visualization.point_cloud_point_size", 2.0)
+        scatter = gl.GLScatterPlotItem(
+            pos=points,
+            color=colors,
+            size=point_size,
+            pxMode=True,
+        )
+        self._gl_widget.addItem(scatter)
+        self._point_cloud_item = scatter
+        self._point_cloud_map_path = str(resolved_path)
+
+        # 飞行边界按点云水平尺寸放大 (仅数值限制，不再绘制围栏立柱/天花板，
+        # 避免与真实点云场景的视觉效果冲突)。
+        self.boundary_limit = new_boundary_limit
+
+        # 相机初始视距不跟点云整体尺寸挂钩：室内点云地图 (如地下车库) 往往
+        # 远大于机器人集群实际活动的中心区域，若相机按点云半宽拉远，集群会
+        # 缩成看不见的小点。聚焦在集群附近，用户可自行用鼠标滚轮缩放查看全图。
+        camera_distance = config.get("visualization.point_cloud_camera_distance", 20.0)
+        self._gl_widget.setCameraPosition(
+            distance=camera_distance, elevation=40, azimuth=45
+        )
+        self._clear_boundary_fence()
+
+        logger.info(
+            "已加载点云地图: %s (%d 点, boundary_limit=%.1fm)",
+            resolved_path, len(points), new_boundary_limit,
+        )
+        return True
+
+    def _clear_boundary_fence(self):
+        """移除现有边界围栏 GL item，供地图尺寸变化后重建。"""
+        for item in self._boundary_fence_items:
+            self._gl_widget.removeItem(item)
+        self._boundary_fence_items.clear()
 
     def _create_boundary_fence(self):
         """创建边界围栏 - 四周 + 顶部天花板"""
+        self._clear_boundary_fence()
         fence_height = self.max_altitude  # 围栏高度 = 最大飞行高度
         post_spacing = 2.0  # 立柱间距
         limit = self.boundary_limit
@@ -1641,6 +1784,7 @@ class SwarmView3D(QWidget):
                 pxMode=True
             )
             self._gl_widget.addItem(post_scatter)
+            self._boundary_fence_items.append(post_scatter)
 
         # 创建横杆线条
         if all_rail_points:
@@ -1652,6 +1796,7 @@ class SwarmView3D(QWidget):
                 mode='lines'
             )
             self._gl_widget.addItem(rail_lines)
+            self._boundary_fence_items.append(rail_lines)
 
         # 添加四个角落的高亮标记 (从地面到天花板)
         corner_positions = [
@@ -1671,6 +1816,7 @@ class SwarmView3D(QWidget):
                 pxMode=True
             )
             self._gl_widget.addItem(corner_scatter)
+            self._boundary_fence_items.append(corner_scatter)
 
         # 底部边界线 (更明显的地面标记)
         ground_line_points = []
@@ -1687,6 +1833,7 @@ class SwarmView3D(QWidget):
                 mode='lines'
             )
             self._gl_widget.addItem(ground_lines)
+            self._boundary_fence_items.append(ground_lines)
 
         # ========== 顶部天花板 (Z轴围栏) ==========
         ceiling_points = []
@@ -1720,6 +1867,7 @@ class SwarmView3D(QWidget):
                 mode='lines'
             )
             self._gl_widget.addItem(ceiling_grid)
+            self._boundary_fence_items.append(ceiling_grid)
 
         if ceiling_border:
             ceiling_border_lines = gl.GLLinePlotItem(
@@ -1730,6 +1878,7 @@ class SwarmView3D(QWidget):
                 mode='lines'
             )
             self._gl_widget.addItem(ceiling_border_lines)
+            self._boundary_fence_items.append(ceiling_border_lines)
 
     def _create_obstacles(self):
         """创建柱形点云障碍物 (带碰撞检测)"""
