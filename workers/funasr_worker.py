@@ -18,6 +18,8 @@ _MODEL_RATE = 16000
 _CHUNK_SAMPLES = 7200   # ~450ms @ 16kHz
 _QUEUE_MAX = 20
 
+_scipy_fallback_warned = False
+
 
 def _resample(data: np.ndarray, src_rate: int, dst_rate: int = _MODEL_RATE) -> np.ndarray:
     """高质量重采样，优先使用 soxr，回退到 scipy。"""
@@ -27,6 +29,13 @@ def _resample(data: np.ndarray, src_rate: int, dst_rate: int = _MODEL_RATE) -> n
         import soxr
         return soxr.resample(data, src_rate, dst_rate, quality="HQ").astype(np.float32)
     except ImportError:
+        global _scipy_fallback_warned
+        if not _scipy_fallback_warned:
+            logger.warning(
+                "soxr 未安装，重采样降级到 scipy.signal.resample，"
+                "语音识别准确率可能下降。请运行: pip install soxr"
+            )
+            _scipy_fallback_warned = True
         from scipy import signal as scipy_signal
         n_out = int(len(data) * dst_rate / src_rate)
         return scipy_signal.resample(data, n_out).astype(np.float32)

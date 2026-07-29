@@ -39,6 +39,7 @@ dependencies = [
     "Pillow>=9.0.0",
     "PyYAML>=6.0",
     "sounddevice>=0.4.0",
+    "soxr>=0.4.0",
 ]
 
 [project.optional-dependencies]

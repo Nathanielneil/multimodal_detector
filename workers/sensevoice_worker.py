@@ -27,6 +27,8 @@ _STOP = object()
 _MODEL_RATE = 16000
 _QUEUE_MAX = 20
 
+_scipy_fallback_warned = False
+
 # 模型缓存目录和下载地址（GitHub Releases，无需登录）
 _MODEL_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
 _MODEL_DIR = Path.home() / ".cache" / "sensevoice_small"
@@ -41,6 +43,13 @@ def _resample(data: np.ndarray, src_rate: int, dst_rate: int = _MODEL_RATE) -> n
         import soxr
         return soxr.resample(data, src_rate, dst_rate, quality="HQ").astype(np.float32)
     except ImportError:
+        global _scipy_fallback_warned
+        if not _scipy_fallback_warned:
+            logger.warning(
+                "soxr 未安装，重采样降级到 scipy.signal.resample，"
+                "语音识别准确率可能下降。请运行: pip install soxr"
+            )
+            _scipy_fallback_warned = True
         from scipy import signal as scipy_signal
         n_out = int(len(data) * dst_rate / src_rate)
         return scipy_signal.resample(data, n_out).astype(np.float32)
@@ -180,6 +189,11 @@ class SenseVoiceWorker(QThread):
     def run(self):
         """工作线程主循环：收集音频直到 EOS，然后一次性推理。"""
         buf = np.array([], dtype=np.float32)
+        # 预览推理是对整个 buf 的离线全量重推理（非增量式流式解码），
+        # 若每个音频块到达都触发一次，耗时随 buf 增长呈 O(n^2)，会导致
+        # 队列积压丢帧（进而丢失音频内容，损害识别准确率）。用阈值限流，
+        # 每累计满 1 秒新增音频才做一次预览。
+        next_preview_len = _MODEL_RATE
 
         while True:
             try:
@@ -217,14 +231,17 @@ class SenseVoiceWorker(QThread):
                     self.status_changed.emit("未识别到语音")
 
                 buf = np.array([], dtype=np.float32)
+                next_preview_len = _MODEL_RATE
                 continue
 
             # 普通音频块 — 重采样后累积到缓冲区
             chunk_16k = _resample(item, self._device_rate)
             buf = np.concatenate([buf, chunk_16k])
 
-            # 流式中间结果（每积累约 1.5 秒给一次预览）
-            if len(buf) >= _MODEL_RATE * 1 and self._recognizer is not None:
+            # 流式中间结果：每新增约 1 秒音频才重新推理一次预览，
+            # 避免对增长中的 buf 逐块重复全量推理导致队列积压丢帧。
+            if len(buf) >= next_preview_len and self._recognizer is not None:
+                next_preview_len = len(buf) + _MODEL_RATE
                 try:
                     stream = self._recognizer.create_stream()
                     stream.accept_waveform(_MODEL_RATE, buf)

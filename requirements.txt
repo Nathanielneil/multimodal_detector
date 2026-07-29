@@ -21,6 +21,10 @@ PyYAML>=6.0
 
 # Camera/audio and visual detectors
 sounddevice>=0.4.6
+# High-quality resampling to the 16kHz ASR model rate.  Without this, voice
+# workers silently fall back to scipy.signal.resample, which degrades
+# recognition accuracy noticeably.
+soxr>=0.4.0
 mediapipe==0.10.9
 protobuf>=3.11,<4
 ultralytics>=8.0.0
