@@ -3,13 +3,15 @@
 """
 
 import cv2
+import shutil
 import time
 import numpy as np
+from datetime import datetime
 from typing import Optional, Dict
 from PIL import Image, ImageDraw, ImageFont
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QSplitter, QVBoxLayout, QHBoxLayout,
-    QMessageBox, QApplication, QFrame, QLabel, QScrollArea,
+    QMainWindow, QWidget, QSplitter, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QMessageBox, QApplication, QFrame, QLabel, QSizePolicy,
     QComboBox, QPushButton, QProgressBar, QFileDialog
 )
 from PySide6.QtCore import Qt, QTimer, Slot
@@ -22,217 +24,115 @@ from .styles import MAIN_STYLESHEET
 from .control_panel import ControlPanel
 from .video_widget import VideoWidget
 from utils.logger import get_logger
+from utils.command_history_logger import CommandHistoryLogger
 from config import config
 
 logger = get_logger(__name__)
 
 
-class CollapsibleDroneCard(QFrame):
+class DeviceStatusDot(QFrame):
     """
-    可展开/折叠的无人机状态卡片
+    单个设备的在线状态芯片：浅底圆角卡片，内含较大圆点 + 编号。
 
-    折叠时: 显示 ID、状态指示灯、简要状态
-    展开时: 显示位置、电量、信号、高度、速度等详细信息
+    没有真实回传数据前，在/离线只用一个固定颜色表示，不展示电量/信号/
+    位置等编造数值。绿色=在线，红色=离线，留了 set_online() 接口，
+    接入真机通信后可以据此更新状态。
     """
 
-    def __init__(self, drone_id: int, color: tuple, parent=None, label: str = None):
+    _MIN_HEIGHT = 44
+
+    def __init__(self, label: str, online: bool = True, parent=None):
         super().__init__(parent)
-        self._drone_id = drone_id
-        self._color = color
-        self._color_hex = f"#{int(color[0]*255):02x}{int(color[1]*255):02x}{int(color[2]*255):02x}"
-        self._label = label or f"UAV-{self._drone_id}"
-        self._is_expanded = False
-
-        # 模拟数据
-        self._data = {
-            'status': '待机',
-            'position': (0.0, 0.0, 0.0),
-            'battery': 100,
-            'signal': 100,
-            'speed': 0.0,
-            'altitude': 0.0,
-        }
-
-        self._setup_ui()
-
-    def _setup_ui(self):
-        """初始化UI"""
+        self._label_text = label
+        self._online = online
+        self.setMinimumHeight(self._MIN_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setStyleSheet("""
-            CollapsibleDroneCard {
-                background-color: #ffffff;
+            DeviceStatusDot {
+                background-color: #f5f5f5;
                 border: 1px solid #e0e0e0;
                 border-radius: 6px;
             }
-            CollapsibleDroneCard:hover {
-                border: 1px solid #1e88e5;
-                background-color: #f8f9fa;
-            }
         """)
-        self.setCursor(Qt.PointingHandCursor)
 
-        self._main_layout = QVBoxLayout(self)
-        self._main_layout.setContentsMargins(10, 8, 10, 8)
-        self._main_layout.setSpacing(6)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(1)
 
-        # ===== 头部（始终显示）=====
-        header = QWidget()
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
+        self._dot = QLabel("●")
+        self._dot.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._dot)
 
-        # 状态指示灯
-        self._indicator = QLabel("●")
-        self._indicator.setStyleSheet("color: #9e9e9e; font-size: 10px;")
-        self._indicator.setFixedWidth(12)
-        header_layout.addWidget(self._indicator)
+        self._label = QLabel(label)
+        self._label.setAlignment(Qt.AlignCenter)
+        self._label.setStyleSheet("font-size: 11px; font-weight: bold; color: #424242;")
+        layout.addWidget(self._label)
 
-        # 无人机ID
-        self._id_label = QLabel(self._label)
-        self._id_label.setStyleSheet(f"color: {self._color_hex}; font-size: 12px; font-weight: bold;")
-        header_layout.addWidget(self._id_label)
+        self._apply_online_style()
 
-        # 状态文字
-        self._status_label = QLabel("待机")
-        self._status_label.setStyleSheet("color: #757575; font-size: 11px;")
-        header_layout.addWidget(self._status_label, 1)
+    def _apply_online_style(self):
+        color = "#4caf50" if self._online else "#f44336"
+        self._dot.setStyleSheet(f"color: {color}; font-size: 18px;")
 
-        # 折叠态摘要：心跳 + 电量，便于全屏状态截图
-        self._summary_label = QLabel("HB -- | 100%")
-        self._summary_label.setStyleSheet("color: #757575; font-size: 10px;")
-        self._summary_label.setFixedWidth(78)
-        header_layout.addWidget(self._summary_label)
+    def set_online(self, online: bool):
+        if online == self._online:
+            return
+        self._online = online
+        self._apply_online_style()
 
-        # 展开/折叠图标
-        self._expand_icon = QLabel("▶")
-        self._expand_icon.setStyleSheet("color: #9e9e9e; font-size: 10px;")
-        self._expand_icon.setFixedWidth(15)
-        header_layout.addWidget(self._expand_icon)
 
-        self._main_layout.addWidget(header)
+class DeviceStatusGrid(QWidget):
+    """
+    设备在线状态网格：每个设备一个圆点芯片，按每行设备数自动换行铺满
+    容器宽度，始终保持 4 行左右，不随设备数量增加导致纵向无限变长。
+    """
 
-        # ===== 详情区域（展开时显示）=====
-        self._detail_widget = QWidget()
-        self._detail_widget.setVisible(False)
-        detail_layout = QVBoxLayout(self._detail_widget)
-        detail_layout.setContentsMargins(20, 4, 0, 0)
-        detail_layout.setSpacing(3)
+    _TARGET_ROWS = 4
 
-        # 位置信息
-        self._pos_label = QLabel("位置: (0.0, 0.0, 0.0)")
-        self._pos_label.setStyleSheet("color: #757575; font-size: 10px;")
-        detail_layout.addWidget(self._pos_label)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dots: Dict[str, DeviceStatusDot] = {}
+        self._grid_layout = QGridLayout(self)
+        self._grid_layout.setContentsMargins(0, 0, 0, 0)
+        self._grid_layout.setSpacing(6)
 
-        # 高度信息
-        self._alt_label = QLabel("高度: 0.0 m")
-        self._alt_label.setStyleSheet("color: #757575; font-size: 10px;")
-        detail_layout.addWidget(self._alt_label)
-
-        # 速度信息
-        self._speed_label = QLabel("速度: 0.0 m/s")
-        self._speed_label.setStyleSheet("color: #757575; font-size: 10px;")
-        detail_layout.addWidget(self._speed_label)
-
-        # 电量和信号（水平排列）
-        battery_signal_layout = QHBoxLayout()
-        battery_signal_layout.setSpacing(15)
-
-        self._battery_label = QLabel("电量: 100%")
-        self._battery_label.setStyleSheet("color: #4caf50; font-size: 10px; font-weight: bold;")
-        battery_signal_layout.addWidget(self._battery_label)
-
-        self._signal_label = QLabel("信号: 100%")
-        self._signal_label.setStyleSheet("color: #4caf50; font-size: 10px; font-weight: bold;")
-        battery_signal_layout.addWidget(self._signal_label)
-
-        battery_signal_layout.addStretch()
-        detail_layout.addLayout(battery_signal_layout)
-
-        self._main_layout.addWidget(self._detail_widget)
-
-        # 设置初始高度
-        self._update_height()
-
-    def _update_height(self):
-        """更新卡片高度"""
-        if self._is_expanded:
-            self.setFixedHeight(115)
-        else:
-            self.setFixedHeight(34)
-
-    def mousePressEvent(self, event):
-        """点击切换展开/折叠"""
-        self._is_expanded = not self._is_expanded
-        self._detail_widget.setVisible(self._is_expanded)
-        self._expand_icon.setText("▼" if self._is_expanded else "▶")
-        self._update_height()
-        super().mousePressEvent(event)
-
-    def update_data(self, data: dict):
+    def set_devices(self, labels: list):
         """
-        更新显示数据
+        按给定编号列表重建网格，每行数量取 ceil(总数 / 4) 以保持约 4 行，
+        各列等宽拉伸铺满容器，不在右侧留空白。
 
         Args:
-            data: {'status': str, 'position': tuple, 'battery': int, 'signal': int, 'speed': float}
+            labels: 设备编号列表，如 ["U1", "U2", ..., "D1", "G1"]
         """
-        self._data.update(data)
+        while self._grid_layout.count():
+            item = self._grid_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
-        status = data.get('status', '待机')
-        robot_id = data.get('robot_id')
-        pos = data.get('position', (0, 0, 0))
-        battery = data.get('battery', 100)
-        signal = data.get('signal', 100)
-        speed = data.get('speed', 0.0)
-        online = data.get('online', status == '飞行中')
-        heartbeat = data.get('heartbeat')
+        self._dots.clear()
+        if not labels:
+            return
 
-        # 更新状态指示灯颜色
-        if online:
-            self._indicator.setStyleSheet("color: #4caf50; font-size: 10px;")
-            self._status_label.setStyleSheet("color: #4caf50; font-size: 11px; font-weight: bold;")
-        else:
-            self._indicator.setStyleSheet("color: #9e9e9e; font-size: 10px;")
-            self._status_label.setStyleSheet("color: #757575; font-size: 11px;")
+        per_row = max(1, -(-len(labels) // self._TARGET_ROWS))  # ceil
+        for col in range(per_row):
+            self._grid_layout.setColumnStretch(col, 1)
 
-        # 更新文字
-        if robot_id:
-            self._id_label.setText(robot_id)
-        self._status_label.setText(status)
-        self._pos_label.setText(f"位置: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
-        self._alt_label.setText(f"高度: {pos[2]:.1f} m")
-        self._speed_label.setText(f"速度: {speed:.1f} m/s")
+        for idx, label in enumerate(labels):
+            row, col = divmod(idx, per_row)
+            dot = DeviceStatusDot(label, online=True)
+            self._dots[label] = dot
+            self._grid_layout.addWidget(dot, row, col)
 
-        # 电量颜色
-        if battery > 50:
-            bat_color = "#4caf50"
-        elif battery > 20:
-            bat_color = "#ff9800"
-        else:
-            bat_color = "#f44336"
-        self._battery_label.setText(f"电量: {battery}%")
-        self._battery_label.setStyleSheet(f"color: {bat_color}; font-size: 10px; font-weight: bold;")
+    def set_online(self, label: str, online: bool):
+        """更新单个设备的在线状态（预留给接入真机通信后使用）。"""
+        dot = self._dots.get(label)
+        if dot is not None:
+            dot.set_online(online)
 
-        if heartbeat is not None:
-            sig_color = "#4caf50" if heartbeat else "#ff9800"
-            hb_text = "跳动" if heartbeat else "等待"
-            hb_summary = "ON" if heartbeat else "WAIT"
-            self._signal_label.setText(f"心跳: {hb_text}")
-            self._signal_label.setStyleSheet(f"color: {sig_color}; font-size: 10px; font-weight: bold;")
-        else:
-            # 信号颜色
-            if signal > 60:
-                sig_color = "#4caf50"
-            elif signal > 30:
-                sig_color = "#ff9800"
-            else:
-                sig_color = "#f44336"
-            self._signal_label.setText(f"信号: {signal}%")
-            self._signal_label.setStyleSheet(f"color: {sig_color}; font-size: 10px; font-weight: bold;")
-            hb_summary = f"{signal}%"
 
-        self._summary_label.setText(f"HB {hb_summary} | {battery}%")
-        self._summary_label.setStyleSheet(f"color: {bat_color}; font-size: 10px;")
-from .history_table import HistoryTable
 from .progress_dialog import ProgressDialog
+from .llm_inference_panel import LLMInferencePanel
 from .swarm_view_3d import SwarmView3D, FormationType as ViewFormationType, SwarmCommand as ViewSwarmCommand
 from workers.camera_worker import CameraWorker
 from detectors.base_detector import DetectionResult
@@ -263,7 +163,7 @@ class MainWindow(QMainWindow):
     整合:
     - 左栏: 控制面板 (ControlPanel)
     - 中栏: 视频显示 (VideoWidget)
-    - 右栏: 历史表格 (HistoryTable)
+    - 右栏: 设备状态与控制卡片（命令历史落盘到 CommandHistoryLogger，不实时展示）
 
     管理:
     - 摄像头采集 (CameraWorker)
@@ -292,6 +192,9 @@ class MainWindow(QMainWindow):
 
     def _init_components(self):
         """初始化组件"""
+        # 命令历史落盘记录器 (不在界面实时展示，只写入 logs/command_history.json)
+        self._history_logger = CommandHistoryLogger()
+
         # 摄像头工作类
         self._camera = CameraWorker(camera_id=0)
 
@@ -381,54 +284,67 @@ class MainWindow(QMainWindow):
         from utils.font_utils import find_cjk_font
         self._font = find_cjk_font(size=18)
 
+    @staticmethod
+    def _short_device_label(robot_id: str) -> str:
+        """把 'UAV-01' 之类的完整编号简化为 'U1'，用于圆点网格展示。"""
+        prefix_map = {"UAV": "U", "DOG": "D", "UGV": "G"}
+        name, _, number = robot_id.partition("-")
+        short_prefix = prefix_map.get(name, name[:1] or "?")
+        try:
+            return f"{short_prefix}{int(number)}"
+        except ValueError:
+            return robot_id
+
     def _create_drone_status_panel(self) -> QWidget:
-        """创建无人机状态监控面板（竖向排列，可展开卡片）"""
+        """创建设备在线状态面板（圆点网格，四行左右，无编造的位置/电量/信号数据）。"""
         panel = QWidget()
 
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(8)
 
-        # 标题（与命令历史标题风格一致）
         title = QLabel("设备状态")
         title.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
         layout.addWidget(title)
 
-        # 滚动区域
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QFrame.NoFrame)
-
-        # 状态容器
-        status_container = QWidget()
-        status_container.setStyleSheet("background-color: transparent;")
-        self._drone_status_layout = QVBoxLayout(status_container)
-        self._drone_status_layout.setContentsMargins(0, 0, 0, 0)
-        self._drone_status_layout.setSpacing(4)
-
-        # 创建每台设备的可展开状态卡片
-        self._drone_status_cards = []
+        self._device_status_grid = DeviceStatusGrid()
         if hasattr(self, '_swarm_view_3d'):
             status_list = self._swarm_view_3d.get_device_status_list()
         else:
             status_list = []
-        for i, status in enumerate(status_list):
-            color = status.get('color', (0.2, 0.5, 0.9))
-            card = CollapsibleDroneCard(
-                i,
-                color,
-                label=status.get('robot_id', f"DEV-{i + 1:02d}")
-            )
-            self._drone_status_layout.addWidget(card)
-            self._drone_status_cards.append(card)
-
-        self._drone_status_layout.addStretch()
-
-        scroll.setWidget(status_container)
-        layout.addWidget(scroll, 1)
+        labels = [
+            self._short_device_label(status.get('robot_id', f"DEV-{i + 1:02d}"))
+            for i, status in enumerate(status_list)
+        ]
+        self._device_status_grid.set_devices(labels)
+        layout.addWidget(self._device_status_grid)
+        layout.addStretch()
 
         return panel
+
+    def _create_llm_inference_panel(self) -> QFrame:
+        """创建大模型推理演示卡片：终端风格固定剧本回放（演示用，非真实推理）。"""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 6px;
+            }
+        """)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        title = QLabel("大模型推理")
+        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        layout.addWidget(title)
+
+        self._llm_inference_widget = LLMInferencePanel()
+        layout.addWidget(self._llm_inference_widget)
+
+        return card
 
     def _create_swarm_control_card(self) -> QFrame:
         """创建集群控制卡片（风格与无人机状态卡片一致）"""
@@ -464,9 +380,9 @@ class MainWindow(QMainWindow):
     def _platform_count_summary(self) -> str:
         """返回右侧栏总平台数量摘要。"""
         if not hasattr(self, '_swarm_view_3d'):
-            drone_count = config.get("visualization.drone_count", 8)
-            dog_count = config.get("visualization.robot_dog_count", 1)
-            ugv_count = config.get("visualization.ugv_count", 1)
+            drone_count = config.get("visualization.drone_count", 5)
+            dog_count = config.get("visualization.robot_dog_count", 2)
+            ugv_count = config.get("visualization.ugv_count", 3)
         else:
             drone_count = self._swarm_view_3d.drone_count
             dog_count = len(self._swarm_view_3d.robot_dogs)
@@ -747,8 +663,8 @@ class MainWindow(QMainWindow):
         return pixmap
 
     def _record_demo_event(self, command: str, details: dict):
-        """向历史表记录任务闭环事件。"""
-        self._history_table.add_result(
+        """记录任务闭环事件到命令历史文件。"""
+        self._history_logger.add_result(
             DetectionResult(
                 modal_type="simulation",
                 command=command,
@@ -934,40 +850,16 @@ class MainWindow(QMainWindow):
             self._drone_count_label.setText(self._platform_count_summary())
 
     def _rebuild_drone_status_cards(self):
-        """重建设备状态卡片列表"""
-        if not hasattr(self, '_drone_status_layout'):
-            return
-
-        # 清除现有卡片
-        for card in self._drone_status_cards:
-            card.deleteLater()
-        self._drone_status_cards.clear()
-
-        # 重新创建卡片
-        status_list = self._swarm_view_3d.get_device_status_list()
-        for i, status in enumerate(status_list):
-            card = CollapsibleDroneCard(
-                i,
-                status.get('color', (0.2, 0.5, 0.9)),
-                label=status.get('robot_id', f"DEV-{i + 1:02d}")
-            )
-            self._drone_status_layout.insertWidget(i, card)
-            self._drone_status_cards.append(card)
-
-    def _update_drone_status_display(self):
-        """更新 10 台设备状态显示"""
-        if not hasattr(self, '_swarm_view_3d'):
+        """设备数量变化后，重建设备状态圆点网格。"""
+        if not hasattr(self, '_device_status_grid'):
             return
 
         status_list = self._swarm_view_3d.get_device_status_list()
-
-        if len(status_list) != len(self._drone_status_cards):
-            self._rebuild_drone_status_cards()
-
-        for idx, status in enumerate(status_list):
-            if idx < len(self._drone_status_cards):
-                card = self._drone_status_cards[idx]
-                card.update_data(status)
+        labels = [
+            self._short_device_label(status.get('robot_id', f"DEV-{i + 1:02d}"))
+            for i, status in enumerate(status_list)
+        ]
+        self._device_status_grid.set_devices(labels)
 
     def _update_ground_platform_status_display(self):
         """更新机器狗/无人车的简要状态。"""
@@ -1018,7 +910,7 @@ class MainWindow(QMainWindow):
                 "mode": "local_simulation",
             }
         )
-        self._history_table.add_result(result)
+        self._history_logger.add_result(result)
         self._update_ground_platform_status_display()
         self.statusBar().showMessage(f"{platform_label}指令: {command_label}", 1500)
 
@@ -1065,13 +957,7 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
 
-        # 右栏上部: 命令历史表格
-        self._history_table = HistoryTable()
-        self._history_table.setMinimumWidth(200)
-        self._history_table.setMinimumHeight(92)
-        self._history_table.setMaximumHeight(130)
-
-        # 右栏中部: 集群控制卡片 (新增)
+        # 右栏上部: 集群控制卡片 (命令历史不再实时展示，改为落盘到 JSON 文件)
         self._swarm_control_card = self._create_swarm_control_card()
 
         # 右栏中部: 三平台本地仿真指令
@@ -1080,15 +966,18 @@ class MainWindow(QMainWindow):
         # 右栏中部: 任务闭环触发面板
         self._acceptance_demo_panel = self._create_acceptance_demo_panel()
 
-        # 右栏下部: 无人机状态监控面板
+        # 右栏下部: 设备在线状态圆点网格
         self._drone_status_panel = self._create_drone_status_panel()
 
-        # 按顺序添加: 命令历史 → 控制区 → 设备状态
-        right_layout.addWidget(self._history_table)
+        # 右栏底部: 大模型推理占位卡片
+        self._llm_inference_panel = self._create_llm_inference_panel()
+
+        # 按顺序添加: 控制区 → 设备状态 → 大模型推理
         right_layout.addWidget(self._swarm_control_card)
         right_layout.addWidget(self._platform_command_panel)
         right_layout.addWidget(self._acceptance_demo_panel)
-        right_layout.addWidget(self._drone_status_panel, 5)  # 展示 10 台设备并发状态
+        right_layout.addWidget(self._drone_status_panel)  # 圆点网格，紧凑显示，不需要额外伸展空间
+        right_layout.addWidget(self._llm_inference_panel, 1)  # 占据剩余空间，避免底部留白
 
         # 添加到主分割器
         self._splitter.addWidget(self._control_panel)
@@ -1464,11 +1353,10 @@ class MainWindow(QMainWindow):
         # 显示处理后的帧
         self._video_widget.display_frame(processed_frame)
 
-        # 更新无人机状态显示 (每5帧更新一次，使用独立计数器)
+        # 更新地面平台状态显示 (每5帧更新一次，使用独立计数器)
         self._drone_status_frame_count += 1
         if self._drone_status_frame_count >= 5:
             self._drone_status_frame_count = 0
-            self._update_drone_status_display()
             self._update_ground_platform_status_display()
 
     def _draw_stats_overlay(self, frame):
@@ -1713,14 +1601,30 @@ class MainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.Yes:
-            self._history_table.clear()
+            self._history_logger.clear()
             self._video_widget.reset_modal_status()
             self.statusBar().showMessage("已重置所有统计", 2000)
 
     @Slot()
     def _on_export(self):
-        """处理导出操作"""
-        self._history_table.export_to_json()
+        """将命令历史文件复制到用户指定位置。"""
+        source_path = self._history_logger.path
+        if not source_path.exists():
+            QMessageBox.information(self, "提示", "没有历史记录可导出")
+            return
+
+        default_name = f"command_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出历史记录", default_name, "JSON 文件 (*.json)"
+        )
+        if not file_path:
+            return
+
+        try:
+            shutil.copyfile(source_path, file_path)
+            QMessageBox.information(self, "导出成功", f"历史记录已导出到:\n{file_path}")
+        except OSError as exc:
+            QMessageBox.warning(self, "导出失败", f"无法写入文件:\n{exc}")
 
     @Slot(bool)
     def _on_record_clicked(self, is_recording: bool):
@@ -1823,8 +1727,8 @@ class MainWindow(QMainWindow):
     def _on_detection_result(self, result: DetectionResult):
         """处理检测结果"""
         logger.debug(f"收到检测结果: 模态={result.modal_type}, 命令='{result.command}'")
-        # 添加到历史表格
-        self._history_table.add_result(result)
+        # 落盘到命令历史文件
+        self._history_logger.add_result(result)
 
         # 更新置信度
         self._confidences[result.modal_type] = result.confidence
