@@ -858,17 +858,14 @@ class QuadrotorDynamics:
 
 class DroneModel:
     """
-    单个无人机 3D 模型 - 简洁清晰的四旋翼样式
+    单个无人机状态模型 - 位置/动力学/避障，不再持有 3D 网格
 
-    结构:
-    - 中央机身 (扁平圆柱)
-    - 4个机臂 (线条)
-    - 4个电机座 (小圆柱)
-    - 4个旋翼 (圆环 + 桨叶)
-    - 起落架 (线条)
+    真实点云场景尺度下 (数十米) 几何机身/机臂/旋翼几乎不可见，
+    渲染改为 SwarmView3D 统一维护的一层固定像素大小 2D 标记点
+    (颜色+编号标签)，本类只负责位置状态和轨迹/雷达数据。
     """
 
-    # 无人机颜色列表
+    # 无人机标记颜色列表 (对应场景内统一 2D 标记层)
     COLORS = [
         (0.2, 0.6, 1.0, 1.0),  # 蓝
         (1.0, 0.4, 0.2, 1.0),  # 橙红
@@ -879,13 +876,6 @@ class DroneModel:
         (1.0, 0.5, 0.7, 1.0),  # 粉
         (0.7, 0.5, 1.0, 1.0),  # 淡紫
     ]
-
-    # 模型参数
-    ARM_LENGTH = 0.15       # 机臂长度
-    ARM_ANGLES = [45, 135, 225, 315]  # X形布局
-    ROTOR_RADIUS = 0.06     # 旋翼半径
-    BODY_RADIUS = 0.035     # 机身半径 (更小)
-    BODY_HEIGHT = 0.015     # 机身高度
 
     def __init__(self, drone_id: int, view: gl.GLViewWidget, enable_lidar: bool = True, use_dynamics: bool = True):
         self.drone_id = drone_id
@@ -936,155 +926,10 @@ class DroneModel:
         # 避障模式开关
         self.avoidance_enabled = True
 
-        # 创建 3D 元素
-        self._create_body()
-        self._create_arms()
-        self._create_motors()
-        self._create_rotors()
-        self._create_landing_gear()
+        # 创建轨迹/雷达可视化元素 (机身几何已移除，改用统一 2D 标记层渲染)
         self._create_trajectory_visual()
         if enable_lidar:
             self._create_lidar_visual()
-
-    def _create_body(self):
-        """创建机身 (扁平圆柱)"""
-        mesh_data = gl.MeshData.cylinder(
-            rows=6, cols=12,
-            radius=[self.BODY_RADIUS, self.BODY_RADIUS],
-            length=self.BODY_HEIGHT
-        )
-        self.body = gl.GLMeshItem(
-            meshdata=mesh_data,
-            smooth=True,
-            color=self.color,
-            shader='shaded',
-            glOptions='opaque'
-        )
-        self.view.addItem(self.body)
-        self.elements.append(self.body)
-
-    def _create_arms(self):
-        """创建机臂 (4根线条)"""
-        self.arms = []
-        for angle in self.ARM_ANGLES:
-            rad = math.radians(angle)
-            end_x = self.ARM_LENGTH * math.cos(rad)
-            end_y = self.ARM_LENGTH * math.sin(rad)
-
-            # 机臂线段
-            arm_pts = np.array([
-                [0, 0, 0],
-                [end_x, end_y, 0]
-            ])
-            arm = gl.GLLinePlotItem(
-                pos=arm_pts,
-                color=(0.3, 0.3, 0.3, 1.0),
-                width=4,
-                antialias=True
-            )
-            self.arms.append(arm)
-            self.view.addItem(arm)
-            self.elements.append(arm)
-
-    def _create_motors(self):
-        """创建电机座 (4个小圆柱)"""
-        self.motors = []
-        motor_radius = 0.012
-        motor_height = 0.012
-
-        for angle in self.ARM_ANGLES:
-            rad = math.radians(angle)
-            pos_x = self.ARM_LENGTH * math.cos(rad)
-            pos_y = self.ARM_LENGTH * math.sin(rad)
-
-            mesh_data = gl.MeshData.cylinder(
-                rows=4, cols=8,
-                radius=[motor_radius, motor_radius],
-                length=motor_height
-            )
-            motor = gl.GLMeshItem(
-                meshdata=mesh_data,
-                smooth=True,
-                color=(0.25, 0.25, 0.25, 1.0),
-                shader='shaded',
-                glOptions='opaque'
-            )
-            motor.translate(pos_x, pos_y, 0)
-            self.motors.append(motor)
-            self.view.addItem(motor)
-            self.elements.append(motor)
-
-    def _create_rotors(self):
-        """创建旋翼 (4个圆盘 + 桨叶)"""
-        self.rotors = []
-
-        for i, angle in enumerate(self.ARM_ANGLES):
-            rad = math.radians(angle)
-            pos_x = self.ARM_LENGTH * math.cos(rad)
-            pos_y = self.ARM_LENGTH * math.sin(rad)
-
-            # 旋翼圆环
-            theta = np.linspace(0, 2 * np.pi, 32)
-            rotor_pts = np.zeros((32, 3))
-            rotor_pts[:, 0] = pos_x + self.ROTOR_RADIUS * np.cos(theta)
-            rotor_pts[:, 1] = pos_y + self.ROTOR_RADIUS * np.sin(theta)
-            rotor_pts[:, 2] = 0.015
-
-            # 前方旋翼红色，后方旋翼深灰色
-            is_front = angle in [45, 315]
-            rotor_color = (0.9, 0.2, 0.2, 0.9) if is_front else (0.4, 0.4, 0.4, 0.9)
-
-            rotor = gl.GLLinePlotItem(
-                pos=rotor_pts,
-                color=rotor_color,
-                width=2.5,
-                antialias=True
-            )
-            self.rotors.append(rotor)
-            self.view.addItem(rotor)
-            self.elements.append(rotor)
-
-            # 旋翼桨叶 (两片)
-            blade_len = self.ROTOR_RADIUS * 0.85
-            blade_pts = np.array([
-                [pos_x - blade_len, pos_y, 0.015],
-                [pos_x + blade_len, pos_y, 0.015],
-            ])
-            blade = gl.GLLinePlotItem(
-                pos=blade_pts,
-                color=rotor_color,
-                width=3,
-                antialias=True
-            )
-            self.rotors.append(blade)
-            self.view.addItem(blade)
-            self.elements.append(blade)
-
-    def _create_landing_gear(self):
-        """创建起落架 (4条腿)"""
-        self.legs = []
-        leg_angles = [0, 90, 180, 270]
-        leg_radius = self.BODY_RADIUS * 0.8
-        leg_height = 0.035
-
-        for angle in leg_angles:
-            rad = math.radians(angle)
-            base_x = leg_radius * math.cos(rad)
-            base_y = leg_radius * math.sin(rad)
-
-            leg_pts = np.array([
-                [base_x, base_y, -self.BODY_HEIGHT/2],
-                [base_x * 1.3, base_y * 1.3, -self.BODY_HEIGHT/2 - leg_height]
-            ])
-            leg = gl.GLLinePlotItem(
-                pos=leg_pts,
-                color=(0.35, 0.35, 0.35, 1.0),
-                width=2.5,
-                antialias=True
-            )
-            self.legs.append(leg)
-            self.view.addItem(leg)
-            self.elements.append(leg)
 
     def _create_trajectory_visual(self):
         """创建轨迹可视化元素"""
@@ -1295,104 +1140,18 @@ class DroneModel:
         self.position = self.position + (self.target_position - self.position) * t_smooth * 0.1
         self._update_transform()
 
-    def _rotation_matrix(self, roll: float, pitch: float, yaw: float) -> np.ndarray:
-        """计算旋转矩阵 (ZYX欧拉角)"""
-        cr, sr = np.cos(roll), np.sin(roll)
-        cp, sp = np.cos(pitch), np.sin(pitch)
-        cy, sy = np.cos(yaw), np.sin(yaw)
-
-        R = np.array([
-            [cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
-            [sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
-            [-sp,   cp*sr,            cp*cr]
-        ])
-        return R
-
-    def _rotate_point(self, local_pos: np.ndarray, R: np.ndarray, world_pos: np.ndarray) -> np.ndarray:
-        """将局部坐标旋转并平移到世界坐标"""
-        return R @ local_pos + world_pos
-
     def _update_transform(self):
-        """更新所有元素的位置 (L1: 仅位置，无姿态倾斜)"""
-        x, y, z = self.position
+        """
+        位置更新后的钩子 (原用于同步机身/机臂/旋翼网格变换)。
 
-        # 更新机身
-        self.body.resetTransform()
-        self.body.translate(x, y, z)
-
-        # 更新机臂
-        for i, arm in enumerate(self.arms):
-            angle = self.ARM_ANGLES[i]
-            rad = math.radians(angle)
-            arm_pts = np.array([
-                [x, y, z],
-                [x + self.ARM_LENGTH * math.cos(rad),
-                 y + self.ARM_LENGTH * math.sin(rad), z]
-            ])
-            arm.setData(pos=arm_pts)
-
-        # 更新电机座
-        for i, motor in enumerate(self.motors):
-            angle = self.ARM_ANGLES[i]
-            rad = math.radians(angle)
-            motor_x = x + self.ARM_LENGTH * math.cos(rad)
-            motor_y = y + self.ARM_LENGTH * math.sin(rad)
-            motor.resetTransform()
-            motor.translate(motor_x, motor_y, z)
-
-        # 更新旋翼
-        rotor_idx = 0
-        for i, angle in enumerate(self.ARM_ANGLES):
-            rad = math.radians(angle)
-            motor_x = x + self.ARM_LENGTH * math.cos(rad)
-            motor_y = y + self.ARM_LENGTH * math.sin(rad)
-            motor_z = z + 0.015
-
-            # 旋翼圆环
-            theta = np.linspace(0, 2 * np.pi, 32)
-            rotor_pts = np.zeros((32, 3))
-            for j in range(32):
-                rotor_pts[j] = [
-                    motor_x + self.ROTOR_RADIUS * np.cos(theta[j]),
-                    motor_y + self.ROTOR_RADIUS * np.sin(theta[j]),
-                    motor_z
-                ]
-            self.rotors[rotor_idx].setData(pos=rotor_pts)
-            rotor_idx += 1
-
-            # 桨叶
-            blade_len = self.ROTOR_RADIUS * 0.85
-            blade_pts = np.array([
-                [motor_x - blade_len, motor_y, motor_z],
-                [motor_x + blade_len, motor_y, motor_z]
-            ])
-            self.rotors[rotor_idx].setData(pos=blade_pts)
-            rotor_idx += 1
-
-        # 更新起落架
-        leg_angles = [0, 90, 180, 270]
-        leg_radius = self.BODY_RADIUS * 0.8
-        leg_height = 0.035
-
-        for i, leg in enumerate(self.legs):
-            angle = leg_angles[i]
-            rad = math.radians(angle)
-            base_x = x + leg_radius * math.cos(rad)
-            base_y = y + leg_radius * math.sin(rad)
-            base_z = z - self.BODY_HEIGHT / 2
-
-            foot_x = x + leg_radius * 1.3 * math.cos(rad)
-            foot_y = y + leg_radius * 1.3 * math.sin(rad)
-            foot_z = base_z - leg_height
-
-            leg_pts = np.array([
-                [base_x, base_y, base_z],
-                [foot_x, foot_y, foot_z]
-            ])
-            leg.setData(pos=leg_pts)
+        机身几何已移除，渲染改由 SwarmView3D 的统一 2D 标记层
+        每帧读取 self.position 完成，这里不再需要做任何事，仅保留
+        方法签名以兼容 set_position/step_dynamics/update_animation 的调用。
+        """
+        pass
 
     def remove(self):
-        """从场景中移除"""
+        """从场景中移除 (轨迹/雷达可视化元素仍需清理)"""
         for element in self.elements:
             self.view.removeItem(element)
         self.elements.clear()
@@ -1412,9 +1171,9 @@ class SwarmView3D(QWidget):
         super().__init__(parent)
 
         # 状态
-        self.drone_count = config.get("visualization.drone_count", 8)
-        self.robot_dog_count = config.get("visualization.robot_dog_count", 1)
-        self.ugv_count = config.get("visualization.ugv_count", 1)
+        self.drone_count = config.get("visualization.drone_count", 5)
+        self.robot_dog_count = config.get("visualization.robot_dog_count", 2)
+        self.ugv_count = config.get("visualization.ugv_count", 3)
         self.formation_radius = 2.0
         self.base_altitude = 1.5
         self.center = (0.0, 0.0)
@@ -1440,6 +1199,12 @@ class SwarmView3D(QWidget):
 
         # 编队连线
         self.formation_lines: Optional[gl.GLLinePlotItem] = None
+
+        # 统一 2D 标记层 (取代原来的机身几何): 所有设备共用一个固定像素
+        # 大小的散点图层 + 每台设备一对编号标签 (阴影+主文字)，不随场景
+        # 尺度缩放，在真实点云地图上也能清晰看到集群位置。
+        self._marker_scatter: Optional[gl.GLScatterPlotItem] = None
+        self._marker_labels: List[Tuple[gl.GLTextItem, gl.GLTextItem]] = []
 
         # 动画
         self._animation_timer = QTimer(self)
@@ -1484,6 +1249,8 @@ class SwarmView3D(QWidget):
         self._create_drones()
         self._create_ground_platforms()
         self._init_ground_positions()
+        self._create_marker_layer()
+        self._update_marker_layer()
         self._update_status_display()
 
         # 按配置尝试加载先验点云地图，失败则静默保留程序化网格
@@ -1560,7 +1327,7 @@ class SwarmView3D(QWidget):
         # 创建 OpenGL 视图 - 调整相机距离适应 32x32 场景
         self._gl_widget = gl.GLViewWidget()
         self._gl_widget.setCameraPosition(distance=35, elevation=40, azimuth=45)
-        self._gl_widget.setBackgroundColor(pg.mkColor(30, 30, 40))
+        self._gl_widget.setBackgroundColor(pg.mkColor(22, 22, 24))
 
         self._create_ground_plane()
 
@@ -1687,14 +1454,16 @@ class SwarmView3D(QWidget):
         self._remove_ground_plane_items()
         self._clear_procedural_obstacles()
 
+        # 暖灰渐变 (近似混凝土/水泥材质)，与深色背景形成明显亮度对比，
+        # 避免此前蓝色点云叠在蓝黑背景上、缩小后像星空的问题。
         z_min = float(points[:, 2].min())
         z_max = float(points[:, 2].max())
         height_ratio = (points[:, 2] - z_min) / max(z_max - z_min, 1e-3)
         colors = np.empty((len(points), 4), dtype=np.float32)
-        colors[:, 0] = 0.20 + 0.45 * height_ratio
-        colors[:, 1] = 0.32 + 0.35 * height_ratio
-        colors[:, 2] = 0.55 + 0.30 * (1.0 - height_ratio)
-        colors[:, 3] = 0.9
+        colors[:, 0] = 0.55 + 0.35 * height_ratio
+        colors[:, 1] = 0.53 + 0.35 * height_ratio
+        colors[:, 2] = 0.50 + 0.33 * height_ratio
+        colors[:, 3] = 0.95
 
         point_size = config.get("visualization.point_cloud_point_size", 2.0)
         scatter = gl.GLScatterPlotItem(
@@ -2074,9 +1843,9 @@ class SwarmView3D(QWidget):
         import random
         positions = []
         for i in range(self.drone_count):
-            # 在中心安全区内随机分布 (半径 3m 内)
+            # 在中心安全区内随机分布 (半径 2~5m，避免地面待命时 2D 标记/编号标签互相重叠)
             angle = random.uniform(0, 2 * np.pi)
-            radius = random.uniform(0.5, 2.5)
+            radius = random.uniform(2.0, 5.0)
             x = self.center[0] + radius * np.cos(angle)
             y = self.center[1] + radius * np.sin(angle)
             positions.append((x, y, 0.0))
@@ -2088,13 +1857,92 @@ class SwarmView3D(QWidget):
             drone._ground_position = np.array(pos)
 
     def _init_ground_platform_positions(self):
-        """初始化机器狗/无人车地面位置。"""
-        if self.robot_dogs:
-            self.robot_dogs[0].set_position((-3.8, -3.2, 0.0))
-            self.robot_dogs[0].set_yaw(math.radians(20))
-        if self.ugvs:
-            self.ugvs[0].set_position((3.8, -3.2, 0.0))
-            self.ugvs[0].set_yaw(math.radians(160))
+        """初始化机器狗/无人车地面位置，多台时沿一条线错开排列，避免重叠。"""
+        dog_spacing = 1.5
+        for i, dog in enumerate(self.robot_dogs):
+            dog.set_position((-3.8 - i * dog_spacing, -3.2, 0.0))
+            dog.set_yaw(math.radians(20))
+
+        ugv_spacing = 1.8
+        for i, ugv in enumerate(self.ugvs):
+            ugv.set_position((3.8 + i * ugv_spacing, -3.2, 0.0))
+            ugv.set_yaw(math.radians(160))
+
+    # ========== 统一 2D 标记层 (取代机身几何) ==========
+
+    _MARKER_PIXEL_SIZE = 16.0     # 标记点固定像素直径，不随相机距离/场景尺度缩放
+    _MARKER_LABEL_Z_OFFSET = 0.28  # 编号标签相对标记点的世界坐标高度偏移 (米)
+
+    def _create_marker_layer(self):
+        """创建统一的 2D 标记散点图层和编号标签，取代原来的机身几何渲染。"""
+        self._marker_scatter = gl.GLScatterPlotItem(
+            pos=np.zeros((1, 3)),
+            color=(1.0, 1.0, 1.0, 1.0),
+            size=self._MARKER_PIXEL_SIZE,
+            pxMode=True,
+        )
+        self._gl_widget.addItem(self._marker_scatter)
+
+        label_font = QFont("Microsoft YaHei", 10, QFont.Weight.Bold)
+        self._marker_labels = []
+        for device in self._get_device_positions():
+            shadow = gl.GLTextItem(
+                pos=np.zeros(3), text=device["robot_id_short"],
+                color=(0, 0, 0, 220), font=label_font,
+            )
+            main = gl.GLTextItem(
+                pos=np.zeros(3), text=device["robot_id_short"],
+                color=(255, 255, 255, 255), font=label_font,
+            )
+            self._gl_widget.addItem(shadow)
+            self._gl_widget.addItem(main)
+            self._marker_labels.append((shadow, main))
+
+    def _update_marker_layer(self):
+        """每帧按最新设备位置刷新标记点和编号标签 (取代原来逐模型的网格变换)。"""
+        if self._marker_scatter is None:
+            return
+
+        devices = self._get_device_positions()
+
+        # 设备数量在运行时可能变化 (set_drone_count)，标签数量跟随重建
+        if len(devices) != len(self._marker_labels):
+            self._rebuild_marker_labels(devices)
+
+        positions = np.array([d["position"] for d in devices], dtype=np.float32)
+        colors = np.array(
+            [tuple(d["color"][:3]) + (1.0,) for d in devices], dtype=np.float32
+        )
+        self._marker_scatter.setData(pos=positions, color=colors)
+
+        label_offset = np.array([0.0, 0.0, self._MARKER_LABEL_Z_OFFSET])
+        # 阴影文字略微偏移一个像素级的世界坐标量，形成描边效果
+        shadow_offset = np.array([0.01, 0.01, 0.0])
+        for device, (shadow, main) in zip(devices, self._marker_labels):
+            pos = np.array(device["position"], dtype=float) + label_offset
+            shadow.setData(pos=pos + shadow_offset)
+            main.setData(pos=pos)
+
+    def _rebuild_marker_labels(self, devices: List[Dict]):
+        """设备数量变化后重建编号标签集合。"""
+        for shadow, main in self._marker_labels:
+            self._gl_widget.removeItem(shadow)
+            self._gl_widget.removeItem(main)
+        self._marker_labels = []
+
+        label_font = QFont("Microsoft YaHei", 10, QFont.Weight.Bold)
+        for device in devices:
+            shadow = gl.GLTextItem(
+                pos=np.zeros(3), text=device["robot_id_short"],
+                color=(0, 0, 0, 220), font=label_font,
+            )
+            main = gl.GLTextItem(
+                pos=np.zeros(3), text=device["robot_id_short"],
+                color=(255, 255, 255, 255), font=label_font,
+            )
+            self._gl_widget.addItem(shadow)
+            self._gl_widget.addItem(main)
+            self._marker_labels.append((shadow, main))
 
     def _update_formation_lines(self):
         """更新编队连线 - 只在编队状态下显示"""
@@ -2250,6 +2098,7 @@ class SwarmView3D(QWidget):
             ugv.step(dt)
 
         self._update_formation_lines()
+        self._update_marker_layer()
 
     def _update_status_display(self):
         """更新状态显示"""
@@ -2284,11 +2133,12 @@ class SwarmView3D(QWidget):
         self._altitude_label.setText(f"高度: {self.current_altitude:.1f}m")
 
     def _get_device_positions(self) -> List[Dict]:
-        """返回三类平台当前空间位置，用于拓扑动画和事件选择。"""
+        """返回三类平台当前空间位置，用于拓扑动画、事件选择和 2D 标记层。"""
         devices = []
         for i, drone in enumerate(self.drones):
             devices.append({
                 "robot_id": f"UAV-{i + 1:02d}",
+                "robot_id_short": f"U{i + 1}",
                 "platform": PlatformType.DRONE.value,
                 "name": f"无人机 {i + 1}",
                 "position": np.array(drone.position, dtype=float),
@@ -2297,18 +2147,20 @@ class SwarmView3D(QWidget):
         for i, dog in enumerate(self.robot_dogs):
             devices.append({
                 "robot_id": f"DOG-{i + 1:02d}",
+                "robot_id_short": f"D{i + 1}",
                 "platform": PlatformType.ROBOT_DOG.value,
                 "name": f"机器狗 {i + 1}",
                 "position": np.array(dog.position, dtype=float),
-                "color": RobotDogModel.PANEL_COLOR[:3],
+                "color": RobotDogModel.MARKER_COLOR[:3],
             })
         for i, ugv in enumerate(self.ugvs):
             devices.append({
                 "robot_id": f"UGV-{i + 1:02d}",
+                "robot_id_short": f"G{i + 1}",
                 "platform": PlatformType.UGV.value,
                 "name": f"{i + 1}号车",
                 "position": np.array(ugv.position, dtype=float),
-                "color": (0.15, 0.75, 0.85),
+                "color": UGVModel.MARKER_COLOR[:3],
             })
         return devices
 
@@ -2597,9 +2449,9 @@ class SwarmView3D(QWidget):
                     drone.set_position(pos)
                     drone.set_target(pos)
                 else:
-                    # 地面待命: 新无人机放到随机位置
+                    # 地面待命: 新无人机放到随机位置 (半径 2~5m，避免标记/标签重叠)
                     angle = random.uniform(0, 2 * np.pi)
-                    radius = random.uniform(0.5, 2.5)
+                    radius = random.uniform(2.0, 5.0)
                     x = self.center[0] + radius * np.cos(angle)
                     y = self.center[1] + radius * np.sin(angle)
                     pos = (x, y, 0.0)
@@ -2726,6 +2578,8 @@ class SwarmView3D(QWidget):
         now = time.time()
         statuses = []
         devices = self._get_device_positions()
+        dog_idx = 0
+        ugv_idx = 0
 
         for idx, device in enumerate(devices):
             platform = device["platform"]
@@ -2741,14 +2595,16 @@ class SwarmView3D(QWidget):
                 speed = float(np.linalg.norm(getattr(obj, "_smoothed_velocity", np.zeros(3))))
                 battery = obj._sim_battery
             elif platform == PlatformType.ROBOT_DOG.value:
-                dog = self.robot_dogs[0]
+                dog = self.robot_dogs[dog_idx]
+                dog_idx += 1
                 if not hasattr(dog, "_sim_battery"):
                     dog._sim_battery = 88
                 status = f"在线/{dog.get_status()['status']}"
                 speed = dog.get_status()["speed"]
                 battery = dog._sim_battery
             else:
-                ugv = self.ugvs[0]
+                ugv = self.ugvs[ugv_idx]
+                ugv_idx += 1
                 if not hasattr(ugv, "_sim_battery"):
                     ugv._sim_battery = 90
                 status = f"在线/{ugv.get_status()['status']}"

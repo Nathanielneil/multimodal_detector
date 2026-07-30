@@ -1,31 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-地面平台 3D 模型 - 机器狗 (四足) 与无人车 (轮式)
+地面平台状态模型 - 机器狗 (四足) 与无人车 (轮式)
 
 与 swarm_view_3d.DroneModel 共用同一个 GLViewWidget 场景。
 地面平台运动学简化为: 位置 (x, y) + 朝向 (yaw) + 高度状态，
 不使用无人机的飞行动力学/激光雷达，保持轻量。
 
+真实点云场景尺度下几何机身模型不可见，本模块不再持有 3D 网格 GL 元素，
+渲染改为 SwarmView3D 统一维护的一层固定像素大小 2D 标记点 (颜色+编号标签)。
+
 接口与 DroneModel 对齐:
     set_position(pos) / set_target(pos) / set_yaw(yaw)
     step(dt)  - 每帧平滑趋近目标位置与朝向
-    remove()  - 从场景移除所有 GL 元素
+    remove()  - 从场景移除所有 GL 元素 (当前为空实现，保留接口兼容)
 """
 
 import math
 from enum import Enum
-from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
 
 import pyqtgraph.opengl as gl
 from utils.logger import get_logger
-from .model_assets import apply_item_transform, create_model_asset
 
 logger = get_logger(__name__)
-
-_MODEL_ROOT = Path(__file__).resolve().parent.parent / "assets" / "models"
 
 
 class PlatformType(Enum):
@@ -73,30 +72,26 @@ def _wrap_angle(a: float) -> float:
 
 class RobotDogModel:
     """
-    机器狗 3D 模型 - 四足 (躯干 + 头 + 4 条腿)
+    机器狗状态模型 - 位置/姿态/朝向，不再持有 3D 网格
+
+    真实点云场景尺度下几何模型不可见，渲染改为 SwarmView3D 统一维护的
+    一层固定像素大小 2D 标记点 (颜色+编号标签)，本类只负责位置状态。
 
     姿态 (pose):
-        stand    - 站立，躯干抬至 LEG_LEN 高度
-        lie_down - 趴下，躯干贴近地面
-        sit      - 坐下，后部低、前部抬起
+        stand    - 站立
+        lie_down - 趴下
+        sit      - 坐下
     运动:
         位置 (x, y) + 朝向 yaw；前进/后退沿朝向走 _MOVE_STEP，转向改 yaw
     """
 
-    COLOR = (0.96, 0.97, 0.94, 1.0)   # 机器狗：Go2 风格白色外壳
-    PANEL_COLOR = (0.78, 0.80, 0.80, 1.0)
-    DARK_COLOR = (0.08, 0.08, 0.075, 1.0)
-    LEG_COLOR = (0.16, 0.16, 0.15, 1.0)
-    FOOT_COLOR = (0.035, 0.035, 0.032, 1.0)
-    BODY_LEN = 0.82   # 躯干长 (沿朝向 x)
-    BODY_WID = 0.34   # 躯干宽
-    BODY_THK = 0.22   # 躯干厚
-    LEG_LEN = 0.44    # 腿长 (站立时躯干离地高度)
+    MARKER_COLOR = (0.95, 0.55, 0.15, 1.0)   # 机器狗：2D 标记层颜色 (橙色)
+    LEG_LEN = 0.44    # 腿长 (站立时躯干离地高度，仅用于姿态高度状态)
 
     def __init__(self, dog_id: int, view: gl.GLViewWidget):
         self.dog_id = dog_id
         self.view = view
-        self.color = self.COLOR
+        self.color = self.MARKER_COLOR
 
         # 状态: 位置 / 目标位置 / 朝向 / 目标朝向 / 姿态
         self.position = np.array([0.0, 0.0, 0.0])
@@ -108,113 +103,6 @@ class RobotDogModel:
         self._target_body_h = self.LEG_LEN
 
         self.elements: List = []
-        # 当前官方 Go2 OBJ 在 PyQtGraph/OpenGL 场景里观感偏碎，演示默认使用实体低模。
-        # 源模型仍保留在 assets/models/unitree_go2 作为后续离线重拓扑/贴图优化来源。
-        self.asset = None
-        self._create_visual()
-        self._update_transform()
-
-    def _create_visual(self):
-        """创建机器狗的 GL 元素：实体躯干、头部、传感器、四条腿和脚掌。"""
-        # 躯干 — 实体白色外壳
-        self.body = gl.GLMeshItem(
-            meshdata=self._box_mesh(self.BODY_LEN, self.BODY_WID, self.BODY_THK),
-            smooth=False, color=self.color, shader='shaded', glOptions='opaque'
-        )
-        self.view.addItem(self.body)
-        self.elements.append(self.body)
-
-        # 背部控制舱和底部暗色结构，增强实体感
-        self.top_pack = gl.GLMeshItem(
-            meshdata=self._box_mesh(0.52, 0.23, 0.07),
-            smooth=False, color=self.PANEL_COLOR, shader='shaded',
-            glOptions='opaque'
-        )
-        self.view.addItem(self.top_pack)
-        self.elements.append(self.top_pack)
-
-        self.belly = gl.GLMeshItem(
-            meshdata=self._box_mesh(0.72, 0.22, 0.05),
-            smooth=False, color=self.DARK_COLOR, shader='shaded',
-            glOptions='opaque'
-        )
-        self.view.addItem(self.belly)
-        self.elements.append(self.belly)
-
-        self.side_panels: List[gl.GLMeshItem] = []
-        for _ in range(2):
-            panel = gl.GLMeshItem(
-                meshdata=self._box_mesh(0.54, 0.045, 0.10),
-                smooth=False, color=self.PANEL_COLOR, shader='shaded',
-                glOptions='opaque'
-            )
-            self.view.addItem(panel)
-            self.elements.append(panel)
-            self.side_panels.append(panel)
-
-        # 前端传感器头部
-        self.head = gl.GLMeshItem(
-            meshdata=self._box_mesh(0.24, 0.22, 0.17),
-            smooth=False, color=self.color, shader='shaded', glOptions='opaque'
-        )
-        self.view.addItem(self.head)
-        self.elements.append(self.head)
-
-        self.camera = gl.GLMeshItem(
-            meshdata=self._box_mesh(0.045, 0.15, 0.085),
-            smooth=False, color=self.DARK_COLOR, shader='shaded',
-            glOptions='opaque'
-        )
-        self.view.addItem(self.camera)
-        self.elements.append(self.camera)
-
-        # 4 条实体腿 — 每条腿: 髋部白色护罩、上下腿和脚掌
-        self.legs: List[dict] = []
-        for _ in range(4):
-            hip = gl.GLMeshItem(
-                meshdata=self._box_mesh(0.14, 0.10, 0.14),
-                smooth=False, color=self.color, shader='shaded',
-                glOptions='opaque'
-            )
-            upper = gl.GLMeshItem(
-                meshdata=self._box_mesh(0.075, 0.075, 0.24),
-                smooth=False, color=self.LEG_COLOR, shader='shaded',
-                glOptions='opaque'
-            )
-            lower = gl.GLMeshItem(
-                meshdata=self._box_mesh(0.065, 0.065, 0.24),
-                smooth=False, color=self.LEG_COLOR, shader='shaded',
-                glOptions='opaque'
-            )
-            foot = gl.GLMeshItem(
-                meshdata=self._box_mesh(0.20, 0.10, 0.055),
-                smooth=False, color=self.FOOT_COLOR, shader='shaded',
-                glOptions='opaque'
-            )
-            for item in (hip, upper, lower, foot):
-                self.view.addItem(item)
-                self.elements.append(item)
-            self.legs.append({
-                "hip": hip,
-                "upper": upper,
-                "lower": lower,
-                "foot": foot,
-            })
-
-    @staticmethod
-    def _box_mesh(lx: float, ly: float, lz: float):
-        """生成以原点为中心的长方体 MeshData"""
-        x, y, z = lx / 2, ly / 2, lz / 2
-        verts = np.array([
-            [-x, -y, -z], [x, -y, -z], [x, y, -z], [-x, y, -z],
-            [-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z],
-        ])
-        faces = np.array([
-            [0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7],
-            [0, 1, 5], [0, 5, 4], [2, 3, 7], [2, 7, 6],
-            [1, 2, 6], [1, 6, 5], [0, 3, 7], [0, 7, 4],
-        ])
-        return gl.MeshData(vertexes=verts, faces=faces)
 
     def execute_command(self, cmd: str):
         """执行机器狗指令 (cmd 为 RobotDogCommand.value)"""
@@ -279,87 +167,17 @@ class RobotDogModel:
         self._update_transform()
 
     def _update_transform(self):
-        """根据 position / yaw / _body_h 更新所有 GL 元素"""
-        x, y, _ = self.position
-        h = self._body_h
-        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+        """
+        位置更新后的钩子 (原用于同步躯干/头部/四腿网格变换)。
 
-        if self.asset:
-            self.asset.apply_pose((x, y, 0.0), self.yaw)
-            return
-
-        def to_world(lx, ly, lz):
-            """局部坐标 (沿朝向 x 向前) -> 世界坐标"""
-            wx = x + lx * cy - ly * sy
-            wy = y + lx * sy + ly * cy
-            return [wx, wy, lz]
-
-        # 躯干: 平移到 (x, y, h)，绕 z 轴旋转 yaw
-        apply_item_transform(self.body, (x, y, h), self.yaw)
-
-        apply_item_transform(
-            self.top_pack,
-            (x, y, h + self.BODY_THK * 0.58),
-            self.yaw,
-        )
-
-        apply_item_transform(
-            self.belly,
-            (x, y, h - self.BODY_THK * 0.50),
-            self.yaw,
-        )
-
-        for panel, side in zip(self.side_panels, (1, -1)):
-            sx, sy_, sz = to_world(0.0, side * self.BODY_WID * 0.56, h + 0.005)
-            apply_item_transform(panel, (sx, sy_, sz), self.yaw)
-
-        # 头部: 躯干前端上方
-        hx, hy, hz = to_world(self.BODY_LEN * 0.5 + 0.08, 0, h + 0.01)
-        apply_item_transform(self.head, (hx, hy, hz), self.yaw)
-
-        cam_x, cam_y, cam_z = to_world(self.BODY_LEN * 0.5 + 0.225, 0, h + 0.015)
-        apply_item_transform(self.camera, (cam_x, cam_y, cam_z), self.yaw)
-
-        # 4 条腿: 上腿/下腿/脚掌实体。坐下时后腿更短，趴下时整体贴近地面。
-        leg_offsets = [
-            (self.BODY_LEN * 0.35, self.BODY_WID * 0.58),    # 左前
-            (self.BODY_LEN * 0.35, -self.BODY_WID * 0.58),   # 右前
-            (-self.BODY_LEN * 0.35, self.BODY_WID * 0.58),   # 左后
-            (-self.BODY_LEN * 0.35, -self.BODY_WID * 0.58),  # 右后
-        ]
-        for i, (lx, ly) in enumerate(leg_offsets):
-            is_rear = lx < 0
-            hip_z = h - self.BODY_THK * 0.35
-            if self.pose == "lie_down":
-                foot_z = max(0.0, h - self.LEG_LEN * 0.35)
-            elif self.pose == "sit" and is_rear:
-                foot_z = max(0.02, h - self.LEG_LEN * 0.45)
-            else:
-                foot_z = 0.03
-
-            knee_z = (hip_z + foot_z) * 0.5
-            upper_mid_z = (hip_z + knee_z) * 0.5
-            lower_mid_z = (knee_z + foot_z) * 0.5
-            foot_mid_z = foot_z + 0.025
-
-            # 前后腿略微错开，视觉上更像四足结构
-            knee_x_offset = 0.05 if lx > 0 else -0.05
-            hip_x, hip_y, _ = to_world(lx, ly, hip_z)
-            upper_x, upper_y, _ = to_world(lx + knee_x_offset * 0.5, ly, upper_mid_z)
-            lower_x, lower_y, _ = to_world(lx + knee_x_offset, ly, lower_mid_z)
-            foot_x, foot_y, _ = to_world(lx + knee_x_offset * 1.2, ly, foot_mid_z)
-
-            leg = self.legs[i]
-            for item, px, py, pz in (
-                (leg["hip"], hip_x, hip_y, hip_z),
-                (leg["upper"], upper_x, upper_y, upper_mid_z),
-                (leg["lower"], lower_x, lower_y, lower_mid_z),
-                (leg["foot"], foot_x, foot_y, foot_mid_z),
-            ):
-                apply_item_transform(item, (px, py, pz), self.yaw)
+        机身几何已移除，渲染改由 SwarmView3D 的统一 2D 标记层每帧读取
+        self.position 完成，这里不再需要做任何事，仅保留方法签名以兼容
+        set_position/step 的调用。
+        """
+        pass
 
     def remove(self):
-        """从场景移除所有元素"""
+        """从场景移除所有元素 (当前无持有的 GL item，保留接口兼容)"""
         for el in self.elements:
             self.view.removeItem(el)
         self.elements.clear()
@@ -387,26 +205,21 @@ class RobotDogModel:
 
 class UGVModel:
     """
-    无人车 3D 模型 - 轮式平台 (车体 + 驾驶舱 + 4 个轮子)
+    无人车状态模型 - 位置/朝向，不再持有 3D 网格
+
+    真实点云场景尺度下几何模型不可见，渲染改为 SwarmView3D 统一维护的
+    一层固定像素大小 2D 标记点 (颜色+编号标签)，本类只负责位置状态。
 
     运动:
         位置 (x, y) + 朝向 yaw；启动后可前进/后退/转向，停车后锁定位置。
     """
 
-    COLOR = (0.15, 0.75, 0.85, 1.0)  # 无人车：青蓝色
-    BODY_LEN = 0.9
-    BODY_WID = 0.45
-    BODY_THK = 0.18
-    CABIN_LEN = 0.34
-    CABIN_WID = 0.34
-    CABIN_THK = 0.18
-    WHEEL_RADIUS = 0.12
-    WHEEL_WIDTH = 0.09
+    MARKER_COLOR = (0.15, 0.75, 0.85, 1.0)  # 无人车：2D 标记层颜色 (青蓝色)
 
     def __init__(self, ugv_id: int, view: gl.GLViewWidget):
         self.ugv_id = ugv_id
         self.view = view
-        self.color = self.COLOR
+        self.color = self.MARKER_COLOR
 
         self.position = np.array([0.0, 0.0, 0.0])
         self.target_position = np.array([0.0, 0.0, 0.0])
@@ -416,96 +229,6 @@ class UGVModel:
         self.speed_level = 1
 
         self.elements: List = []
-        self.asset = create_model_asset(
-            _MODEL_ROOT / "clearpath_husky",
-            self.view,
-            default_color=self.color,
-        )
-        if self.asset:
-            self.elements.extend(self.asset.items)
-            self._create_asset_overlays()
-        else:
-            self._create_visual()
-        self._update_transform()
-
-    def _create_visual(self):
-        """创建无人车 GL 元素。"""
-        self.body = gl.GLMeshItem(
-            meshdata=RobotDogModel._box_mesh(self.BODY_LEN, self.BODY_WID, self.BODY_THK),
-            smooth=False, color=self.color, shader='shaded', glOptions='opaque'
-        )
-        self.view.addItem(self.body)
-        self.elements.append(self.body)
-
-        self.cabin = gl.GLMeshItem(
-            meshdata=RobotDogModel._box_mesh(self.CABIN_LEN, self.CABIN_WID, self.CABIN_THK),
-            smooth=False, color=(0.08, 0.45, 0.55, 1.0), shader='shaded', glOptions='opaque'
-        )
-        self.view.addItem(self.cabin)
-        self.elements.append(self.cabin)
-
-        self.roof_sensor = gl.GLMeshItem(
-            meshdata=gl.MeshData.cylinder(
-                rows=6, cols=16,
-                radius=[0.08, 0.08],
-                length=0.10
-            ),
-            smooth=True, color=(0.02, 0.02, 0.02, 1.0), shader='shaded',
-            glOptions='opaque'
-        )
-        self.view.addItem(self.roof_sensor)
-        self.elements.append(self.roof_sensor)
-
-        self.front_bumper = gl.GLMeshItem(
-            meshdata=RobotDogModel._box_mesh(0.08, self.BODY_WID * 1.08, 0.08),
-            smooth=False, color=(0.02, 0.02, 0.02, 1.0), shader='shaded',
-            glOptions='opaque'
-        )
-        self.view.addItem(self.front_bumper)
-        self.elements.append(self.front_bumper)
-
-        self.wheels: List[gl.GLMeshItem] = []
-        for _ in range(4):
-            wheel = gl.GLMeshItem(
-                meshdata=gl.MeshData.cylinder(
-                    rows=8, cols=20,
-                    radius=[self.WHEEL_RADIUS, self.WHEEL_RADIUS],
-                    length=self.WHEEL_WIDTH
-                ),
-                smooth=True, color=(0.03, 0.03, 0.03, 1.0), shader='shaded',
-                glOptions='opaque'
-            )
-            self.view.addItem(wheel)
-            self.wheels.append(wheel)
-            self.elements.append(wheel)
-
-        self.heading_line = gl.GLLinePlotItem(
-            pos=np.zeros((2, 3)), color=(0.9, 1.0, 0.2, 1.0),
-            width=3, antialias=True
-        )
-        self.view.addItem(self.heading_line)
-        self.elements.append(self.heading_line)
-
-    def _create_asset_overlays(self):
-        """为外部小车模型追加演示用传感器和朝向线。"""
-        self.roof_sensor = gl.GLMeshItem(
-            meshdata=gl.MeshData.cylinder(
-                rows=6, cols=16,
-                radius=[0.075, 0.075],
-                length=0.10
-            ),
-            smooth=True, color=(0.02, 0.02, 0.02, 1.0), shader='shaded',
-            glOptions='opaque'
-        )
-        self.view.addItem(self.roof_sensor)
-        self.elements.append(self.roof_sensor)
-
-        self.heading_line = gl.GLLinePlotItem(
-            pos=np.zeros((2, 3)), color=(0.9, 1.0, 0.2, 1.0),
-            width=3, antialias=True
-        )
-        self.view.addItem(self.heading_line)
-        self.elements.append(self.heading_line)
 
     def execute_command(self, cmd: str):
         """执行无人车指令 (cmd 为 UGVCommand.value)。"""
@@ -564,62 +287,14 @@ class UGVModel:
         self._update_transform()
 
     def _update_transform(self):
-        x, y, _ = self.position
-        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+        """
+        位置更新后的钩子 (原用于同步车体/驾驶舱/轮子网格变换)。
 
-        def to_world(lx, ly, lz):
-            wx = x + lx * cy - ly * sy
-            wy = y + lx * sy + ly * cy
-            return [wx, wy, lz]
-
-        if self.asset:
-            self.asset.apply_pose((x, y, 0.0), self.yaw)
-
-            sensor_x, sensor_y, sensor_z = to_world(0.08, 0.0, 0.58)
-            apply_item_transform(
-                self.roof_sensor,
-                (sensor_x, sensor_y, sensor_z),
-                self.yaw,
-            )
-
-            start = np.array(to_world(0.0, 0.0, 0.68))
-            end = np.array(to_world(0.95, 0.0, 0.68))
-            self.heading_line.setData(pos=np.array([start, end]))
-            return
-
-        body_z = self.BODY_THK * 0.5 + 0.08
-
-        apply_item_transform(self.body, (x, y, body_z), self.yaw)
-
-        cx, cy_, cz = to_world(0.08, 0.0, body_z + self.BODY_THK * 0.5)
-        apply_item_transform(self.cabin, (cx, cy_, cz), self.yaw)
-
-        sensor_x, sensor_y, sensor_z = to_world(
-            0.03, 0.0, body_z + self.BODY_THK * 0.5 + self.CABIN_THK + 0.05
-        )
-        apply_item_transform(self.roof_sensor, (sensor_x, sensor_y, sensor_z), self.yaw)
-
-        bumper_x, bumper_y, bumper_z = to_world(self.BODY_LEN * 0.52, 0.0, body_z)
-        apply_item_transform(self.front_bumper, (bumper_x, bumper_y, bumper_z), self.yaw)
-
-        wheel_offsets = [
-            (self.BODY_LEN * 0.34, self.BODY_WID * 0.55),
-            (self.BODY_LEN * 0.34, -self.BODY_WID * 0.55),
-            (-self.BODY_LEN * 0.34, self.BODY_WID * 0.55),
-            (-self.BODY_LEN * 0.34, -self.BODY_WID * 0.55),
-        ]
-        for wheel, (lx, ly) in zip(self.wheels, wheel_offsets):
-            wx, wy, wz = to_world(lx, ly, self.WHEEL_RADIUS)
-            apply_item_transform(
-                wheel,
-                (wx, wy, wz),
-                self.yaw,
-                rotation_deg=(90, 0, 0),
-            )
-
-        start = np.array(to_world(0.0, 0.0, body_z + 0.2))
-        end = np.array(to_world(0.75, 0.0, body_z + 0.2))
-        self.heading_line.setData(pos=np.array([start, end]))
+        机身几何已移除，渲染改由 SwarmView3D 的统一 2D 标记层每帧读取
+        self.position 完成，这里不再需要做任何事，仅保留方法签名以兼容
+        set_position/step 的调用。
+        """
+        pass
 
     def remove(self):
         """从场景移除所有元素。"""
