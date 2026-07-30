@@ -86,12 +86,12 @@ visualization:
   # Arena settings
   arena_size: 32  # meters
   boundary_margin: 1.0
-  # Drone settings
-  drone_count: 8
-  max_drones: 8
-  min_drones: 8
-  robot_dog_count: 1
-  ugv_count: 1
+  # Drone settings (中期验收方案: 无人机 5 + 无人车 3 + 机器狗 2 = 10 台)
+  drone_count: 5
+  max_drones: 5
+  min_drones: 5
+  robot_dog_count: 2
+  ugv_count: 3
   # Trajectory settings
   trajectory_buffer_size: 200
   # APF (Artificial Potential Field) settings
